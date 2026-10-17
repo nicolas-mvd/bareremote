@@ -2,9 +2,9 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.3.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.4.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.3.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.3.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.0-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
@@ -22,11 +22,20 @@ Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and
 
 If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
 
+## Updates
+
+Open the gear (Setup) → **Check for updates**. Download a newer release, then
+confirm installation with Android. Android may first ask you to allow BareRemote
+to install unknown apps. Pairing and widget settings survive an in-place update.
+There are no automatic phone checks or background downloads. This first updater
+enabled APK must be installed manually; later versions can update through the app.
+See [update checks, verification and release instructions](docs/UPDATES.md).
+
 ## Day/Night from the phone
 
 One mode icon shows the TV's **last confirmed** preset: **sun for Day**, **moon for Night**. Tap it to toggle. The TV decides which mode comes next from its own saved state, so either phone can use the button. A **question mark** means the mode is unknown, unavailable, or the actual picture levels differ from the selected preset.
 
-This requires **[BareHome 1.2](https://github.com/nicolas-mvd/barehome/releases/tag/v1.2)** on the TV, its supported picture-control hardware, and its existing one-time picture permission. It uses your saved Backlight/Picture Brightness presets; edit those by holding the Day/Night button in the launcher.
+This requires **[BareHome 1.2 or newer](https://github.com/nicolas-mvd/barehome/releases/tag/v1.3)** on the TV, its supported picture-control hardware, and its existing one-time picture permission. It uses your saved Backlight/Picture Brightness presets; edit those by holding the Day/Night button in the launcher.
 
 Opening the remote, tapping Sync, or changing mode requests a fresh TV snapshot. An idle widget keeps the last confirmed state. If the other phone or the TV remote changes the picture, tap Sync to refresh; there is no continuous monitoring.
 
@@ -67,7 +76,7 @@ See [protocol notes and primary implementation references](docs/PROTOCOL.md) for
 
 ## Prototype limits and validation
 
-One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, cloud requests, scheduled background polling, or automatic startup. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
+One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, scheduled background polling, or automatic startup. Manual update checks and downloads contact GitHub; remote commands remain local. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
 
 The 0.2.0 suites passed **156 protocol assertions** (including loopback mutual TLS) and **55 engine assertions** covering shared sessions, rapid command queues, Sync, deadlines, and cancellation across app/widget lifecycle changes.
 
@@ -92,11 +101,11 @@ simulated TV confirmed app and widget Day → Night → Day, Sync, and all 11 ke
 controls plus source once in order. This exercises the actual signed APK and
 Android Keystore connection, with temporary emulator UDP routing for replies.
 
-The matching **BareHome 1.2 is a prerelease**. Physical-TV tests of the new
-state-confirmation path were deferred by the owner; the TV remains on
-1.1-personal. Its previous explicit Day/Night and source checks do not establish
-1.2 callback compatibility. Install and verify that update before relying on
-mode confirmation. Physical-phone checks of 0.3.0 are also pending.
+The matching **BareHome 1.2** was subsequently installed in place on the same
+CSV4K (`1.2-personal`, code 10). Two authenticated state queries returned Day
+without changing picture levels. The owner then confirmed on their phone that
+Sync showed the sun and tapping switched the TV to Night with the moon icon.
+This verifies that particular phone/TV path; other models remain untested.
 
 The 0.3 app also fits the 320dp phone layout with all controls visible. Widget
 controls have at least 48dp targets, with no visible text row. The installed

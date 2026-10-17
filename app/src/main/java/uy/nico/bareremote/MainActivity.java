@@ -298,6 +298,18 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Hold OK in the app for a long press.", 12, MUTED);
         widgetNote.setPadding(0, dp(10), 0, dp(4));
         body.addView(widgetNote);
+        Button updates = button("Check for updates", "Check for a BareRemote update");
+        updates.setOnClickListener(v -> {
+            pendingSetup = false;
+            dismissSetup();
+            AppUpdates.open(this);
+        });
+        LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(-1, dp(48));
+        updateParams.topMargin = dp(12);
+        body.addView(updates, updateParams);
+        TextView version = text(installedVersion(), 12, MUTED);
+        version.setPadding(0, dp(8), 0, dp(8));
+        body.addView(version);
         ScrollView setupScroll = new ScrollView(this);
         setupScroll.addView(body);
         setupDialog = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
@@ -544,6 +556,14 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     private String safeHost() { return engine.host() == null ? "" : engine.host(); }
+
+    private String installedVersion() {
+        try {
+            return "BareRemote " + getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException exception) {
+            return "BareRemote";
+        }
+    }
 
     private void enableControls(boolean enabled) {
         for (View button : remoteButtons) {

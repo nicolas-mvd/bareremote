@@ -8,4 +8,11 @@ Read `docs/PICTURE_STATE.md` before changing mode confirmation. Picture requests
 
 Use the loopback fake TV and an explicitly selected Android emulator for development. Do not send pairing requests, keys, or change the physical TV without arranging a viewing break with the user. Distinguish emulator/mock evidence from physical-device compatibility, and name the version actually tested on hardware.
 
+The user-requested updater is the only external network feature: manual GitHub
+metadata checks and explicitly requested APK downloads. Read `docs/UPDATES.md`.
+Keep fixed repository URLs, HTTPS/size/deadline bounds, checksum/package/version/
+signer validation, private read-only APK grants, and Android's install prompt.
+No updater services, alarms or automatic downloads. Publish release assets before
+changing `update.json`; preserve the private release key and increase version code.
+
 Run `python3 -m unittest discover -s tests -p 'test_*.py'` for protocol changes. Exercise the actual Android Keystore path after cryptography changes: JVM-only TLS tests cannot validate Android key authorization. Keep certificate pinning, bounded operations, cancellation, and single-delivery semantics. Do not silently retry keys whose delivery is uncertain.
