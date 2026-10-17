@@ -2,11 +2,11 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.2.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.3.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.2.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.2.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.3.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.3.0-prototype)
 
-[App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.2.0 on the Android emulator, paired with a local simulated TV.
+[App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
@@ -18,29 +18,33 @@ A small Android TV remote for your phone. Open it, press a button. Or give its w
 
 The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, pair again in Setup with its new address. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
 
-Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. The gamepad icon asks BareHome 1.1 to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Hold **OK** in the app for a long press, including BareHome’s mode editor. Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
+Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Hold **OK** in the app for a long press, including BareHome’s mode editor. Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
 
-If the connection gets stuck, tap **↻ Sync** in the green top strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
+If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
 
 ## Day/Night from the phone
 
-Tap the **sun** to request Day, or the **moon** to request Night. Each selects that explicit saved preset, so two phones cannot accidentally invert one another’s choice. The buttons do not claim to display the TV’s current state. “Sent” or “requested” means the command was transmitted, not that the TV confirmed applying it.
+One mode icon shows the TV's **last confirmed** preset: **sun for Day**, **moon for Night**. Tap it to toggle. The TV decides which mode comes next from its own saved state, so either phone can use the button. A **question mark** means the mode is unknown, unavailable, or the actual picture levels differ from the selected preset.
 
-This optional feature requires **[BareHome 1.1](https://github.com/nicolas-mvd/barehome/releases/tag/v1.1)** on the TV, its supported picture-control hardware, and its existing one-time picture permission. It uses your saved BareHome Backlight/Picture Brightness presets; edit those by holding the Day/Night button in the launcher. BareRemote does not set arbitrary brightness values.
+This requires **[BareHome 1.2](https://github.com/nicolas-mvd/barehome/releases/tag/v1.2)** on the TV, its supported picture-control hardware, and its existing one-time picture permission. It uses your saved Backlight/Picture Brightness presets; edit those by holding the Day/Night button in the launcher.
 
-The request travels over the existing paired TV remote connection. BareHome handles it in a tiny activity with no window and returns immediately; no extra TV network listener or background service is added. On our tested CSV4K TV, the same SmartTube playback activity was resumed afterward; this is not a guarantee of uninterrupted playback in every app. The normal model, automatic-lighting, permission, and TV Picture-mode guards remain in place. Other TVs can use the remote but do not gain unsupported picture controls. An older BareHome installation may silently ignore these requests; regular remote controls still work.
+Opening the remote, tapping Sync, or changing mode requests a fresh TV snapshot. An idle widget keeps the last confirmed state. If the other phone or the TV remote changes the picture, tap Sync to refresh; there is no continuous monitoring.
+
+The request uses the existing paired TV connection. The phone briefly listens for an authenticated local reply, and BareHome sends one reply before stopping. No permanent TV listener or service is added. A missing reply never triggers an automatic second toggle. Normal remote buttons work independently of picture-state support. See [how confirmation works and its limits](docs/PICTURE_STATE.md).
+
+The hardware, permission, automatic-lighting and native Picture-mode guards remain unchanged. Confirmed settings are not a measurement of emitted light. The windowless TV entry point can briefly change activity lifecycle state; uninterrupted playback across all apps is not guaranteed.
 
 ## Full-page widget
 
 Tap **Add widget** in the app and accept your launcher’s prompt. Alternatively, touch and hold an empty home-screen area → **Widgets** → **BareRemote**.
 
-The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The gear and status open the app; Sync reconnects; its control buttons send commands directly. Pair once in the app first.
+The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The gear opens the app; Sync reconnects and checks picture state; its control buttons send commands directly. Pair once in the app first.
 
 The first tap opens a connection. Further taps reuse it for faster navigation, and each tap resets a **60-second idle timer**. A temporary Android foreground service keeps this session alive, with a notification containing **Stop**. It ends automatically after a minute without taps. The app can keep its own connection while open.
 
 On Android 13+, BareRemote asks once for notification permission after opening the paired app. This permission is optional: the widget still works if you decline, and Android still shows the foreground service in its Active apps/Task Manager view.
 
-The widget shows the selected control, such as **Sending · Right** and **Sent · Right**. “Sent” confirms transmission, not an acknowledgment of the TV’s action. A brief TV startup wait remains, but the delay after sending no longer holds up later commands. Long-OK is app-only because home-screen launchers reserve widget long presses for moving and resizing.
+The widget uses icons only, with no title or connection-status text row. TalkBack still announces control names and connection status. The gear opens the app for setup or errors. A brief TV startup wait remains, but the delay after sending does not hold up later commands. Long-OK is app-only because home-screen launchers reserve widget long presses for moving and resizing.
 
 ## Build
 
@@ -65,7 +69,7 @@ See [protocol notes and primary implementation references](docs/PROTOCOL.md) for
 
 One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, cloud requests, scheduled background polling, or automatic startup. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
 
-The current suites pass **156 protocol assertions** (including loopback mutual TLS) and **55 engine assertions** covering shared sessions, rapid command queues, Sync, deadlines, and cancellation across app/widget lifecycle changes.
+The 0.2.0 suites passed **156 protocol assertions** (including loopback mutual TLS) and **55 engine assertions** covering shared sessions, rapid command queues, Sync, deadlines, and cancellation across app/widget lifecycle changes.
 
 The original 0.1.0 checks used the actual APK on an Android 15 emulator with a simulated TV: all 12 app and widget buttons, app long-OK, saved pairing, widget pinning and full-page resizing, widget use after app-process termination, offline errors, and rejection of a changed TV certificate. Widget commands kept the launcher visible; returning home and reopening the app did not crash.
 
@@ -80,3 +84,22 @@ That TV check used BareHome **1.1-personal** (code 9), with the owner’s existi
 Layout checks on the Android 15 emulator covered the 320dp-wide phone layout, all 11 visible key controls in both app and widget, and app long-OK. A 33-control widget sequence using 50 ms presses with 200 ms gaps arrived in order and applied exactly once per press. The connection and service stopped after 60 seconds idle; the next tap reconnected and delivered once. Widget status uses partial updates after one second without a new status, so status rendering does not rebuild touch targets during a burst; this does not delay commands. The foreground notification is created once per session.
 
 Very fast synthetic widget bursts with almost no gap occasionally missed a click before BareRemote received it; every received command was delivered once. The cause of that launcher-side test result remains unresolved. Rapid tapping with the new layout still needs checking on physical phones.
+
+Version **0.3.0** adds the PlayStation source icon, centered Sync + single mode
+strip, and an icon-only widget. Its 304 host assertions pass (156 protocol,
+108 engine, 40 callback). Installed Android 15 emulator checks against a local
+simulated TV confirmed app and widget Day → Night → Day, Sync, and all 11 key
+controls plus source once in order. This exercises the actual signed APK and
+Android Keystore connection, with temporary emulator UDP routing for replies.
+
+The matching **BareHome 1.2 is a prerelease**. Physical-TV tests of the new
+state-confirmation path were deferred by the owner; the TV remains on
+1.1-personal. Its previous explicit Day/Night and source checks do not establish
+1.2 callback compatibility. Install and verify that update before relying on
+mode confirmation. Physical-phone checks of 0.3.0 are also pending.
+
+The 0.3 app also fits the 320dp phone layout with all controls visible. Widget
+controls have at least 48dp targets, with no visible text row. The installed
+padding update was rechecked for confirmed toggling and a normal key. The widget
+connection stopped after 60 seconds idle, and the next tap reconnected once.
+The published APK matches the installed, tested APK byte-for-byte.

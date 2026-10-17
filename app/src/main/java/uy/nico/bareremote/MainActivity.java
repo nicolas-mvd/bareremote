@@ -11,7 +11,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.content.res.ColorStateList;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputFilter;
@@ -43,7 +42,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private RemoteEngine engine;
     private TextView stateText;
     private TextView errorText;
-    private Button syncButton;
+    private ImageButton syncButton;
+    private ImageButton pictureButton;
     private AlertDialog setupDialog;
     private AlertDialog codeDialog;
     private AlertDialog helpDialog;
@@ -113,33 +113,22 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         ImageButton setup = icon(R.drawable.remote_icon_setup, "Setup");
         setup.setOnClickListener(v -> showSetup());
         header.addView(setup, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout shortcutSpace = row();
+        shortcutSpace.setGravity(Gravity.CENTER);
         LinearLayout shortcuts = row();
         shortcuts.setBackground(roundFill(GREEN, 100));
-        syncButton = button("Sync", "Reconnect to saved TV");
-        syncButton.setTextColor(GREEN_INK);
-        syncButton.setTextSize(13);
-        syncButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        syncButton = icon(R.drawable.remote_icon_sync, "Sync: reconnect to saved TV");
+        syncButton.setImageTintList(ColorStateList.valueOf(GREEN_INK));
         syncButton.setBackground(roundStates(0x00000000, 0x2230523a, 100));
-        syncButton.setPadding(dp(8), 0, dp(4), 0);
-        Drawable syncIcon = getDrawable(R.drawable.remote_icon_sync).mutate();
-        syncIcon.setTint(GREEN_INK);
-        syncIcon.setBounds(0, 0, dp(19), dp(19));
-        syncButton.setCompoundDrawables(syncIcon, null, null, null);
-        syncButton.setCompoundDrawablePadding(dp(4));
-        syncButton.setTooltipText("Sync: reconnect to saved TV");
         syncButton.setOnClickListener(v -> { clearError(); engine.reconnect(); });
-        shortcuts.addView(syncButton, new LinearLayout.LayoutParams(0, dp(48), 1));
-        View divider = spacer();
-        divider.setBackgroundColor(0x35153d25);
-        shortcuts.addView(divider, new LinearLayout.LayoutParams(dp(1), dp(26)));
-        ImageButton day = modeButton(R.drawable.remote_icon_sun, "Day", false);
-        ImageButton night = modeButton(R.drawable.remote_icon_moon, "Night", true);
-        shortcuts.addView(day, new LinearLayout.LayoutParams(dp(48), dp(48)));
-        shortcuts.addView(night, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        shortcuts.addView(syncButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        pictureButton = createModeButton();
+        shortcuts.addView(pictureButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        shortcutSpace.addView(shortcuts, new LinearLayout.LayoutParams(-2, dp(48)));
         LinearLayout.LayoutParams shortParams = new LinearLayout.LayoutParams(0, dp(48), 1);
         shortParams.leftMargin = dp(8);
         shortParams.rightMargin = dp(8);
-        header.addView(shortcuts, shortParams);
+        header.addView(shortcutSpace, shortParams);
         ImageButton power = keyIcon(R.drawable.remote_icon_power, "TV power", KeyEvent.KEYCODE_POWER);
         header.addView(power, new LinearLayout.LayoutParams(dp(48), dp(48)));
         content.setHeader(header);
@@ -175,7 +164,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         LinearLayout navigation = row();
         ImageButton back = keyIcon(R.drawable.remote_icon_back, "Back", KeyEvent.KEYCODE_BACK);
         ImageButton home = keyIcon(R.drawable.remote_icon_home, "TV home", KeyEvent.KEYCODE_HOME);
-        ImageButton input = keyIcon(R.drawable.remote_icon_gamepad, "Input / source", KeyEvent.KEYCODE_TV_INPUT);
+        ImageButton input = keyIcon(R.drawable.remote_icon_playstation, "Input / source", KeyEvent.KEYCODE_TV_INPUT);
         addWeightedIcon(navigation, back, 1);
         addWeightedIcon(navigation, home, 1.35f);
         addWeightedIcon(navigation, input, 1);
@@ -191,6 +180,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         setContentView(screen);
         screen.requestApplyInsets();
         refreshTarget();
+        refreshPictureMode();
         enableControls(engine.isPaired());
     }
 
@@ -215,16 +205,30 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         return button;
     }
 
-    private ImageButton modeButton(int resource, String description, boolean night) {
-        ImageButton button = icon(resource, description + " · BareHome");
+    private ImageButton createModeButton() {
+        ImageButton button = icon(R.drawable.remote_icon_mode_unknown, "Check or change TV picture mode");
         button.setImageTintList(ColorStateList.valueOf(GREEN_INK));
         button.setBackground(roundStates(0x00000000, 0x2230523a, 100));
         button.setOnClickListener(v -> {
             clearError();
-            engine.sendPictureMode(night);
+            engine.togglePictureMode(null);
         });
         remoteButtons.add(button);
         return button;
+    }
+
+    private void refreshPictureMode() {
+        if (pictureButton == null) return;
+        String mode = engine.pictureState();
+        int icon = "day".equals(mode) ? R.drawable.remote_icon_sun
+                : "night".equals(mode) ? R.drawable.remote_icon_moon : R.drawable.remote_icon_mode_unknown;
+        String description = "day".equals(mode) ? "Day last confirmed on TV. Tap to toggle TV mode"
+                : "night".equals(mode) ? "Night last confirmed on TV. Tap to toggle TV mode"
+                : "custom".equals(mode) ? "TV levels differ from its saved preset. Tap to switch preset"
+                : "TV mode not confirmed. Sync to check, or tap to switch preset";
+        pictureButton.setImageResource(icon);
+        pictureButton.setContentDescription(description);
+        pictureButton.setTooltipText(description);
     }
 
     private void addWeightedIcon(LinearLayout row, ImageButton button, float weight) {
@@ -277,7 +281,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         TextView note = text("The TV will show a pairing code. Each phone pairs separately.", 13, MUTED);
         note.setPadding(0, dp(8), 0, 0);
         body.addView(note);
-        TextView modes = text("☀ Day / ☾ Night use the saved picture levels in BareHome on your TV. Install BareHome 1.1 or later and enable its picture controls. Input opens the TV’s source menu.", 13, MUTED);
+        TextView modes = text("The sun or moon shows the last TV-confirmed Day or Night preset. Tap it to switch. Sync checks the TV again. A question mark means the mode is unknown or its levels were changed elsewhere. Requires BareHome 1.2 with picture controls enabled. The PlayStation button opens the TV’s source menu.", 13, MUTED);
         modes.setPadding(0, dp(16), 0, dp(12));
         body.addView(modes);
         LinearLayout extras = row();
@@ -423,6 +427,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         engine.setListener(this);
         engine.resume();
         refreshTarget();
+        refreshPictureMode();
         enableControls(engine.isPaired());
         if (pendingCode) showCode();
         else if (pendingSetup) showSetup();
@@ -477,8 +482,11 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     @Override public void onState(String state, boolean paired) {
         stateText.setText(state);
         refreshTarget();
+        refreshPictureMode();
         enableControls(paired);
     }
+
+    @Override public void onPictureState(String state) { refreshPictureMode(); }
 
     @Override public void onPairingCodeNeeded() {
         pairingInProgress = true;

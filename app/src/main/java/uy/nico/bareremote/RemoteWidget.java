@@ -40,6 +40,7 @@ public final class RemoteWidget extends AppWidgetProvider {
             // Status carries no click-listener or dimension changes during input.
             RemoteViews status = new RemoteViews(context.getPackageName(), R.layout.remote_widget);
             setStatus(status, message(paired));
+            setPictureMode(context, status, paired);
             manager.partiallyUpdateAppWidget(ids, status);
         }
     };
@@ -158,25 +159,46 @@ public final class RemoteWidget extends AppWidgetProvider {
             float width = options.getInt(landscape ? AppWidgetManager.OPTION_APPWIDGET_MAX_WIDTH
                     : AppWidgetManager.OPTION_APPWIDGET_MIN_WIDTH, 288);
             float height = options.getInt(landscape ? AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT
-                    : AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 490);
+                    : AppWidgetManager.OPTION_APPWIDGET_MAX_HEIGHT, 476);
             manager.updateAppWidget(id, makeViews(context, paired, message, width, height));
         }
     }
 
     private static void setStatus(RemoteViews views, String message) {
-        views.setTextViewText(R.id.widget_status, message);
-        String description = "BareRemote. " + message + ". Open remote and connection settings.";
-        views.setContentDescription(R.id.widget_header, description);
-        views.setContentDescription(R.id.widget_status_header, description);
+        views.setContentDescription(R.id.widget_header,
+                "BareRemote. " + message + ". Open remote and connection settings.");
+        views.setContentDescription(R.id.widget_sync, "Sync: reconnect to TV. " + message);
+    }
+
+    private static void setPictureMode(Context context, RemoteViews views, boolean paired) {
+        String state = paired ? RemoteEngine.get(context).pictureState() : "unknown";
+        int icon = R.drawable.remote_icon_mode_unknown;
+        String description;
+        if (!paired) {
+            description = "Pair your TV in BareRemote to use Day/Night.";
+        } else if ("day".equals(state)) {
+            icon = R.drawable.remote_icon_sun;
+            description = "Day last confirmed on TV. Tap to toggle TV mode.";
+        } else if ("night".equals(state)) {
+            icon = R.drawable.remote_icon_moon;
+            description = "Night last confirmed on TV. Tap to toggle TV mode.";
+        } else if ("custom".equals(state)) {
+            description = "Custom picture levels last confirmed on TV. Tap to toggle TV mode.";
+        } else {
+            description = "Day/Night state unknown. Sync to check or tap to toggle TV mode.";
+        }
+        views.setImageViewResource(R.id.widget_mode, icon);
+        views.setContentDescription(R.id.widget_mode, description);
     }
 
     private static RemoteViews makeViews(Context context, boolean paired, String message,
             float width, float height) {
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.remote_widget);
         setStatus(views, message);
+        setPictureMode(context, views, paired);
         if (Build.VERSION.SDK_INT >= 31) {
-            // 24 dp outer padding + 78 dp header/status + 140 dp bottom controls.
-            float diameter = Math.max(180, Math.min(420, Math.min(width - 24, height - 242)));
+            // 24 dp outer padding + 48 dp header + 16 dp pad gaps + 140 dp bottom controls.
+            float diameter = Math.max(180, Math.min(420, Math.min(width - 24, height - 228)));
             setSize(views, R.id.widget_dpad, diameter, diameter);
             float third = diameter / 3;
             views.setViewLayoutHeight(R.id.widget_up, third, TypedValue.COMPLEX_UNIT_DIP);
@@ -191,18 +213,14 @@ public final class RemoteWidget extends AppWidgetProvider {
         PendingIntent openApp = PendingIntent.getActivity(context, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.widget_header, openApp);
-        views.setOnClickPendingIntent(R.id.widget_status_header, openApp);
         PendingIntent sync = paired ? PendingIntent.getForegroundService(context, 1001,
                 WidgetRemoteService.syncIntent(context),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE) : openApp;
         views.setOnClickPendingIntent(R.id.widget_sync, sync);
-        for (int mode = 0; mode < 2; mode++) {
-            boolean night = mode == 1;
-            PendingIntent picture = paired ? PendingIntent.getForegroundService(context, 1003 + mode,
-                    WidgetRemoteService.pictureModeIntent(context, night),
-                    PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE) : openApp;
-            views.setOnClickPendingIntent(night ? R.id.widget_night : R.id.widget_day, picture);
-        }
+        PendingIntent picture = paired ? PendingIntent.getForegroundService(context, 1005,
+                WidgetRemoteService.toggleModeIntent(context),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE) : openApp;
+        views.setOnClickPendingIntent(R.id.widget_mode, picture);
         for (int i = 0; i < BUTTONS.length; i++) {
             PendingIntent action = openApp;
             if (paired) {

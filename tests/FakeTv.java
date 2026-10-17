@@ -3,6 +3,11 @@ package uy.nico.bareremote;
 import java.io.InputStream;
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.DatagramSocket;
+import java.net.DatagramPacket;
+import java.nio.charset.StandardCharsets;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.security.KeyStore;
@@ -37,6 +42,11 @@ public final class FakeTv {
     private static final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor();
     private static final SecureRandom random = new SecureRandom();
     private static final AtomicInteger sequence = new AtomicInteger();
+    private static final ExecutorService pictureCallbacks = Executors.newFixedThreadPool(2);
+    private static final Set<Integer> emulatorRedirects = Collections.synchronizedSet(new HashSet<Integer>());
+    private static volatile boolean pictureNight;
+    private static final java.util.regex.Pattern PICTURE_REQUEST = java.util.regex.Pattern.compile(
+            "^barehome://picture/(state|toggle)\\?reply=([0-9.]+)&port=([0-9]+)&token=([a-f0-9]{64})$");
 
     public static void main(String[] args) throws Exception {
         if (args.length != 3) throw new IllegalArgumentException("FakeTv test.p12 PAIRING_PORT REMOTE_PORT");
@@ -45,6 +55,9 @@ public final class FakeTv {
         serve(context, Integer.parseInt(args[2]), false);
         System.out.println("FAKE_TV_READY loopback=127.0.0.1 emulator=10.0.2.2");
         System.out.flush();
+        Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            for (Integer port : new HashSet<>(emulatorRedirects)) emulatorRedirect("del", port, 0);
+        }));
         new CountDownLatch(1).await();
     }
 
@@ -181,10 +194,28 @@ public final class FakeTv {
                     }, 250, TimeUnit.MILLISECONDS));
                 } else if (message.has(90)) {
                     String link = new String(message.message(90).bytes(1), java.nio.charset.StandardCharsets.UTF_8);
-                    if (!link.equals("barehome://picture/day") && !link.equals("barehome://picture/night") && !link.equals("barehome://inputs")) {
-                        throw new IOException("Unexpected app link");
+                    java.util.regex.Matcher picture = PICTURE_REQUEST.matcher(link);
+                    if (picture.matches()) {
+                        final boolean toggle = picture.group(1).equals("toggle");
+                        final String replyHost = picture.group(2);
+                        final int replyPort = Integer.parseInt(picture.group(3));
+                        final byte[] token = PictureStateWire.unhex(picture.group(4));
+                        // Log only the action, never the per-request authentication token.
+                        System.out.println("PICTURE_REQUEST id=" + session + " action=" + (toggle ? "toggle" : "state") + " at_ms=" + elapsedMs());
+                        final String result;
+                        synchronized (FakeTv.class) {
+                            if (toggle) pictureNight = !pictureNight;
+                            result = pictureNight ? "night" : "day";
+                        }
+                        pictureCallbacks.execute(() -> replyPicture(replyHost, replyPort, token, result, session));
+                    } else {
+                        if (!link.equals("barehome://picture/day") && !link.equals("barehome://picture/night") && !link.equals("barehome://inputs")) {
+                            throw new IOException("Unexpected app link");
+                        }
+                        if (link.equals("barehome://picture/day")) pictureNight = false;
+                        if (link.equals("barehome://picture/night")) pictureNight = true;
+                        System.out.println("APP_LINK_REQUEST id=" + session + " uri=" + link + " at_ms=" + elapsedMs());
                     }
-                    System.out.println("APP_LINK_REQUEST id=" + session + " uri=" + link + " at_ms=" + elapsedMs());
                 } else if (message.has(9)) {
                     long value = message.message(9).integer(1, 0);
                     if (value == 1) System.out.println("PING_OK id=" + session);
@@ -197,6 +228,59 @@ public final class FakeTv {
             for (ScheduledFuture<?> pending : pendingKeys) pending.cancel(false);
             ping.cancel(false);
         }
+    }
+
+    private static void replyPicture(String replyHost, int replyPort, byte[] token, String state, int session) {
+        try {
+            if (replyPort < 1024 || replyPort > 65535 || token == null) throw new IOException("Invalid test callback");
+            // The mock never sends to a LAN host. Emulator callbacks use an opt-in
+            // local console redirection and are removed after the one-shot window.
+            if (!"10.0.2.15".equals(replyHost) || !emulatorConfigured()) {
+                System.out.println("PICTURE_REPLY_SKIPPED id=" + session + " reason=emulator-redirection-not-enabled");
+                return;
+            }
+            int hostPort;
+            try (DatagramSocket reservation = new DatagramSocket(0, InetAddress.getByAddress(new byte[]{127,0,0,1}))) {
+                hostPort = reservation.getLocalPort();
+            }
+            if (!emulatorRedirect("add", hostPort, replyPort)) throw new IOException("Emulator redirection failed");
+            emulatorRedirects.add(hostPort);
+            timers.schedule(() -> {
+                emulatorRedirect("del", hostPort, 0);
+                emulatorRedirects.remove(hostPort);
+            }, 5, TimeUnit.SECONDS);
+            String prefix = "BH1|" + PictureStateWire.hex(MessageDigest.getInstance("SHA-256").digest(token)) + "|" + state;
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(token, "HmacSHA256"));
+            byte[] response = (prefix + "|" + PictureStateWire.hex(mac.doFinal(prefix.getBytes(StandardCharsets.US_ASCII))))
+                    .getBytes(StandardCharsets.US_ASCII);
+            try (DatagramSocket sender = new DatagramSocket(0, InetAddress.getByAddress(new byte[]{127,0,0,1}))) {
+                sender.send(new DatagramPacket(response, response.length,
+                        InetAddress.getByAddress(new byte[]{127,0,0,1}), hostPort));
+            }
+            System.out.println("PICTURE_REPLY id=" + session + " state=" + state + " at_ms=" + elapsedMs());
+        } catch (Exception failure) {
+            System.out.println("PICTURE_REPLY_FAILED id=" + session + " reason=" + failure.getClass().getSimpleName());
+        }
+    }
+
+    private static boolean emulatorConfigured() {
+        String serial = System.getenv("BAREREMOTE_EMULATOR_SERIAL");
+        String adb = System.getenv("BAREREMOTE_ADB");
+        return serial != null && serial.matches("emulator-[0-9]+") && adb != null && !adb.isEmpty();
+    }
+
+    private static boolean emulatorRedirect(String action, int hostPort, int guestPort) {
+        if (!emulatorConfigured()) return false;
+        try {
+            Process process = new ProcessBuilder(System.getenv("BAREREMOTE_ADB"), "-s",
+                    System.getenv("BAREREMOTE_EMULATOR_SERIAL"), "emu", "redir", action,
+                    "udp:" + hostPort + ("add".equals(action) ? ":" + guestPort : ""))
+                    .redirectErrorStream(true).start();
+            if (!process.waitFor(2, TimeUnit.SECONDS)) { process.destroyForcibly(); return false; }
+            process.getInputStream().close();
+            return process.exitValue() == 0;
+        } catch (Exception failure) { return false; }
     }
 
     private static String clientId(SSLSocket socket) throws Exception {

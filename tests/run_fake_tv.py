@@ -28,7 +28,8 @@ def main():
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.run([
             "javac", "--release", "8", "-d", str(temporary), str(java / "Proto.java"),
-            str(java / "TvProtocol.java"), str(root / "tests/FakeTv.java"),
+            str(java / "TvProtocol.java"), str(java / "PictureStateWire.java"),
+                str(java / "PictureStateClient.java"), str(root / "tests/FakeTv.java"),
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         process = subprocess.Popen([
             "java", "-cp", str(temporary), "uy.nico.bareremote.FakeTv", str(store),

@@ -17,6 +17,10 @@ public final class EngineTest {
     public static void main(String[] args) throws Exception {
         burstAndOwnership();
         pictureAndInputCommands();
+        confirmedPictureCallbacks();
+        pictureCancellationAndOrdering();
+        pictureErrorsAndScopedCache();
+        persistedPictureScope();
         queuedTimeout();
         insufficientDeliveryBudget();
         syncCancelsOldCommands();
@@ -50,6 +54,11 @@ public final class EngineTest {
         engine.setWidgetSessionActive(false);
         engine.pause();
         worker(engine).shutdownNow();
+        Field pictureField = RemoteEngine.class.getDeclaredField("pictureWorker");
+        pictureField.setAccessible(true);
+        ThreadPoolExecutor pictureWorker = (ThreadPoolExecutor) pictureField.get(engine);
+        pictureWorker.shutdownNow();
+        check(pictureWorker.awaitTermination(2, TimeUnit.SECONDS), "picture worker terminates");
         check(worker(engine).awaitTermination(2, TimeUnit.SECONDS), "network worker terminates");
     }
 
@@ -109,6 +118,123 @@ public final class EngineTest {
             release.countDown(); idle(engine);
             check(TvProtocol.Remote.modes.size() == 2, "stopped widget cannot send stale picture request");
         } finally { shutdown(engine); }
+    }
+
+    private static void waitFor(java.util.function.BooleanSupplier condition) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (!condition.getAsBoolean() && System.nanoTime() < deadline) {
+            Handler.drain();
+            Thread.sleep(1);
+        }
+        Handler.drain();
+        check(condition.getAsBoolean(), "asynchronous picture result arrives");
+    }
+
+    private static void confirmedPictureCallbacks() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.setWidgetSessionActive(true);
+            TvProtocol.Remote.holdPictureReplies = true;
+            List<String> results = new ArrayList<>();
+            engine.togglePictureMode(results::add); idle(engine);
+            check(TvProtocol.Remote.pictureToggles.equals(java.util.Arrays.asList(true)), "one toggle request sent");
+            check("unknown".equals(engine.pictureState()) && results.isEmpty(), "sending does not invent confirmed state");
+            engine.sendWidgetKey(22, error -> {}); idle(engine);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)), "reply wait does not hold normal key queue");
+            TvProtocol.Remote.pictureRequests.get(0).reply("night");
+            waitFor(() -> results.size() == 1);
+            check(results.get(0) == null && "night".equals(engine.pictureState()), "authenticated result confirms Night");
+            check(TvProtocol.Remote.pictureRequests.get(0).closed, "confirmed callback socket closes");
+        } finally { shutdown(engine); }
+    }
+
+    private static void pictureCancellationAndOrdering() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.setWidgetSessionActive(true);
+            TvProtocol.Remote.holdPictureReplies = true;
+            List<String> older = new ArrayList<>(), newer = new ArrayList<>();
+            engine.requestPictureState(older::add); idle(engine);
+            engine.togglePictureMode(newer::add); idle(engine);
+            TvProtocol.Remote.pictureRequests.get(1).reply("night");
+            waitFor(() -> newer.size() == 1);
+            TvProtocol.Remote.pictureRequests.get(0).reply("day");
+            waitFor(() -> older.size() == 1);
+            check("night".equals(engine.pictureState()), "late older reply cannot overwrite newer snapshot");
+            engine.togglePictureMode(older::add); idle(engine);
+            PictureStateClient cancelled = TvProtocol.Remote.pictureRequests.get(2);
+            engine.setWidgetSessionActive(false); Handler.drain();
+            check(cancelled.closed, "widget Stop closes pending UDP listener immediately");
+            cancelled.reply("day");
+            waitFor(() -> older.size() == 2);
+            check("Control cancelled".equals(older.get(1)), "stopped request completes cancelled once");
+            check("night".equals(engine.pictureState()), "cancelled response does not alter saved confirmation");
+            engine.setWidgetSessionActive(true);
+            engine.requestPictureState(newer::add); idle(engine);
+            PictureStateClient oldGeneration = TvProtocol.Remote.pictureRequests.get(3);
+            engine.reconnect(error -> {}); idle(engine);
+            check(oldGeneration.closed, "Sync closes old generation callback socket");
+            oldGeneration.reply("day"); Handler.drain();
+            check("night".equals(engine.pictureState()), "old generation cannot publish late state");
+        } finally { shutdown(engine); }
+    }
+
+    private static void pictureErrorsAndScopedCache() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.setWidgetSessionActive(true);
+            List<String> results = new ArrayList<>();
+            engine.togglePictureMode(results::add); idle(engine);
+            waitFor(() -> results.size() == 1);
+            check("night".equals(engine.pictureState()), "cache accepts confirmed snapshot");
+            TvProtocol.Remote.holdPictureReplies = true;
+            engine.requestPictureState(results::add); idle(engine);
+            TvProtocol.Remote.pictureRequests.get(1).reply("unavailable");
+            waitFor(() -> results.size() == 2);
+            check(results.get(1) != null && "unknown".equals(engine.pictureState()), "unavailable reply invalidates cached mode");
+            engine.togglePictureMode(results::add); idle(engine);
+            PictureStateClient timedOut = TvProtocol.Remote.pictureRequests.get(2);
+            Handler.advance(7000);
+            waitFor(() -> results.size() == 3);
+            check(timedOut.closed && results.get(2) != null, "deadline closes listener and completes once");
+            check(TvProtocol.Remote.pictureToggles.stream().filter(value -> value).count() == 2,
+                    "timed-out toggle is never repeated");
+            TvProtocol.Remote.unsupportedPicture = true;
+            List<String> sync = new ArrayList<>();
+            engine.reconnect(sync::add); idle(engine);
+            check(sync.size() == 1 && sync.get(0) == null, "optional state query does not break Sync success");
+            engine.sendWidgetKey(22, error -> {}); idle(engine);
+            check(TvProtocol.Remote.keys.size() == 1, "unsupported picture API does not disable regular keys");
+            engine.forget(); Handler.drain();
+            check("unknown".equals(engine.pictureState()), "Forget clears confirmed mode");
+        } finally { shutdown(engine); }
+    }
+
+    private static void persistedPictureScope() throws Exception {
+        Handler.reset(); TvProtocol.Remote.reset();
+        Context context = new Context();
+        Constructor<RemoteEngine> constructor = RemoteEngine.class.getDeclaredConstructor(Context.class);
+        constructor.setAccessible(true);
+        RemoteEngine original = constructor.newInstance(context);
+        try {
+            original.setWidgetSessionActive(true);
+            List<String> result = new ArrayList<>();
+            original.togglePictureMode(result::add); idle(original);
+            waitFor(() -> result.size() == 1);
+            check("night".equals(original.pictureState()), "confirmed snapshot saved before process restart");
+        } finally { shutdown(original); }
+        RemoteEngine restored = constructor.newInstance(context);
+        try { check("night".equals(restored.pictureState()), "same IP and pinned TV restores last confirmation"); }
+        finally { shutdown(restored); }
+        context.getSharedPreferences("remote", Context.MODE_PRIVATE).edit().putString("certificate", "Ag==").apply();
+        RemoteEngine differentPin = constructor.newInstance(context);
+        try { check("unknown".equals(differentPin.pictureState()), "changed TV pin cannot inherit snapshot"); }
+        finally { shutdown(differentPin); }
+        context.getSharedPreferences("remote", Context.MODE_PRIVATE).edit().putString("certificate", "AQ==")
+                .putString("host", "192.0.2.2").apply();
+        RemoteEngine differentHost = constructor.newInstance(context);
+        try { check("unknown".equals(differentHost.pictureState()), "changed TV address cannot inherit snapshot"); }
+        finally { shutdown(differentHost); }
     }
 
     private static void queuedTimeout() throws Exception {

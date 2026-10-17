@@ -257,6 +257,16 @@ public final class TvProtocol {
             sendBareHomeLink("barehome://inputs");
         }
 
+        PictureStateClient openPictureStateRequest(int timeoutMillis) throws IOException {
+            if ((features & 512) == 0)
+                throw new UnsupportedOperationException("This TV remote service does not support BareHome commands.");
+            return PictureStateClient.open(socket.getLocalAddress(), socket.getInetAddress(), timeoutMillis);
+        }
+
+        void sendPictureStateRequest(PictureStateClient request, boolean toggle) throws IOException {
+            sendBareHomeLink(request.request(toggle));
+        }
+
         private void sendBareHomeLink(String link) throws IOException {
             synchronized (keyLock) {
                 if ((features & 512) == 0) {
@@ -331,7 +341,7 @@ public final class TvProtocol {
                 features = (int) supported & FEATURES;
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.2.0");
+                        .text(5, "uy.nico.bareremote").text(6, "0.3.0");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;

@@ -9,6 +9,10 @@ import android.util.Base64;
 import android.view.KeyEvent;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -23,6 +27,7 @@ final class RemoteEngine {
         void onPairingCodeNeeded();
         void onPaired();
         void onError(String message);
+        default void onPictureState(String state) {}
     }
     interface Completion { void done(String error); }
     private static RemoteEngine instance;
@@ -37,6 +42,11 @@ final class RemoteEngine {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ThreadPoolExecutor worker = new ThreadPoolExecutor(1, 1, 8, TimeUnit.SECONDS,
             new ArrayBlockingQueue<Runnable>(16), task -> new Thread(task, "BareRemote-network"));
+    private final ThreadPoolExecutor pictureWorker = new ThreadPoolExecutor(2, 2, 8, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<Runnable>(4), task -> new Thread(task, "BareRemote-picture"));
+    private final Set<PictureOperation> pictureRequests = new HashSet<>();
+    private final AtomicInteger pictureRevision = new AtomicInteger();
+    private volatile String confirmedPicture = "unknown";
     private final AtomicInteger generation = new AtomicInteger();
     private final AtomicInteger widgetGeneration = new AtomicInteger();
     private final AtomicInteger foregroundGeneration = new AtomicInteger();
@@ -61,12 +71,17 @@ final class RemoteEngine {
         catch (IllegalArgumentException invalid) { pin = null; }
         status = isPaired() ? "Ready" : "Pair your TV in Setup";
         worker.allowCoreThreadTimeOut(true);
+        pictureWorker.allowCoreThreadTimeOut(true);
+        String cached = preferences.getString("picture_state", "unknown");
+        if (pictureScope().equals(preferences.getString("picture_scope", "")) && confirmedState(cached))
+            confirmedPicture = cached;
     }
 
     boolean isPaired() { return !host.isEmpty() && pin != null && pin.length > 0; }
     String host() { return host; }
     String status() { return status; }
-    void setListener(Listener value) { listener = value; state(status); }
+    String pictureState() { return confirmedPicture; }
+    void setListener(Listener value) { listener = value; state(status); value.onPictureState(confirmedPicture); }
     void clearListener(Listener value) { if (listener == value) listener = null; }
 
     /** Start a fresh session without changing the saved pairing or phone identity. */
@@ -78,6 +93,7 @@ final class RemoteEngine {
         final int token;
         synchronized (connectionLock) {
             token = generation.incrementAndGet();
+            cancelInactivePictureRequests();
             closeRemote();
         }
         state("Connecting…", token);
@@ -91,6 +107,7 @@ final class RemoteEngine {
                 if (!connection.isOpen()) throw new IOException("TV disconnected");
                 state("Connected", token);
                 complete(operation, null, false);
+                pictureRequest(false, null, operation.widgetToken != -1, true);
             } catch (Exception failure) {
                 complete(operation, message(failure));
             }
@@ -102,6 +119,7 @@ final class RemoteEngine {
         synchronized (connectionLock) {
             if (widgetSessionActive && !active) widgetGeneration.incrementAndGet();
             widgetSessionActive = active;
+            cancelInactivePictureRequests();
             if (!connectionWanted()) closeRemote();
         }
     }
@@ -123,6 +141,7 @@ final class RemoteEngine {
                     if (!current(token) || !connectionWanted()) { discard(connected); return; }
                 }
                 state("Connected", token);
+                pictureRequest(false, null, false, true);
             } catch (Exception failure) {
                 if (current(token) && foreground) error(message(failure), token);
             }
@@ -133,6 +152,7 @@ final class RemoteEngine {
         synchronized (connectionLock) {
             if (foreground) foregroundGeneration.incrementAndGet();
             foreground = false;
+            cancelInactivePictureRequests();
             if (!connectionWanted()) closeRemote();
         }
         if (pairingBusy) cancelPairing();
@@ -201,6 +221,7 @@ final class RemoteEngine {
                     }
                     host = address;
                     pin = certificate;
+                    publishPictureState("unknown");
                     pairingBusy = false;
                     pairing = null;
                     pendingHost = null;
@@ -227,6 +248,7 @@ final class RemoteEngine {
 
     void cancelPairing() {
         generation.incrementAndGet();
+        synchronized (connectionLock) { cancelInactivePictureRequests(); }
         TvProtocol.Pairing old = pairing;
         pairing = null;
         pendingHost = null;
@@ -246,12 +268,147 @@ final class RemoteEngine {
         preferences.edit().remove("host").remove("certificate").apply();
         host = "";
         pin = null;
+        publishPictureState("unknown");
         state("Pair your TV in Setup");
     }
 
     void sendKey(int key) { command(key, false, null); }
     void sendLongKey(int key) { command(key, true, null); }
     void sendWidgetKey(int key, Completion completion) { command(key, false, completion); }
+
+    void requestPictureState(Completion completion) {
+        pictureRequest(false, completion, completion != null, false);
+    }
+
+    void togglePictureMode(Completion completion) {
+        pictureRequest(true, completion, completion != null, false);
+    }
+
+    private void pictureRequest(boolean toggle, Completion completion, boolean widgetOwner, boolean quiet) {
+        if (!isPaired() || pairingBusy) {
+            if (!quiet) finish(completion, !isPaired() ? "Pair your TV in Setup first." : "Finish pairing first.");
+            return;
+        }
+        final PictureOperation request;
+        synchronized (connectionLock) {
+            if (pictureRequests.size() >= 6) {
+                if (!quiet) finish(completion, "Picture sync is busy. Try again.");
+                return;
+            }
+            request = new PictureOperation(generation.get(), completion, widgetOwner, toggle, quiet);
+            pictureRequests.add(request);
+        }
+        request.operation.timeout = () -> {
+            synchronized (connectionLock) {
+                if (request.operation.completed.get()) return;
+                if (request.operation.writing != null) discard(request.operation.writing);
+                request.operation.writing = null;
+                finishPicture(request, null, "Could not confirm TV picture mode. Tap Sync before trying again.");
+            }
+        };
+        main.postDelayed(request.operation.timeout, 7000);
+        execute(() -> {
+            TvProtocol.Remote connection = null;
+            boolean attempted = false;
+            try {
+                if (!canRun(request.operation)) { finishPicture(request, null, "Control cancelled"); return; }
+                connection = connect(request.operation.token);
+                synchronized (connectionLock) {
+                    if (!canRun(request.operation)) { finishPicture(request, null, "Control cancelled"); return; }
+                    long remaining = request.operation.deadline - SystemClock.elapsedRealtime();
+                    if (remaining < TvProtocol.DELIVERY_WINDOW_MS)
+                        throw new SocketTimeoutException("Picture request expired before sending");
+                    request.client = connection.openPictureStateRequest((int) Math.min(4000, remaining));
+                    // Reserve a bounded waiter before writing. Replies cannot delay normal keys.
+                    pictureWorker.execute(() -> awaitPicture(request));
+                    request.operation.writing = connection;
+                    attempted = true;
+                }
+                connection.sendPictureStateRequest(request.client, request.toggle);
+                synchronized (connectionLock) { request.operation.writing = null; }
+            } catch (Exception failure) {
+                synchronized (connectionLock) {
+                    request.operation.writing = null;
+                    if (attempted && connection != null) discard(connection);
+                }
+                finishPicture(request, null, pictureError(failure));
+            }
+        }, () -> finishPicture(request, null, "Remote is busy. Try again."));
+    }
+
+    private final class PictureOperation {
+        final Operation operation;
+        final boolean toggle, quiet;
+        final int revision = pictureRevision.incrementAndGet();
+        PictureStateClient client; // Guarded by connectionLock; close cancels receive immediately.
+        PictureOperation(int token, Completion completion, boolean widgetOwner, boolean toggle, boolean quiet) {
+            operation = new Operation(token, completion, widgetOwner);
+            this.toggle = toggle;
+            this.quiet = quiet;
+        }
+    }
+
+    private void awaitPicture(PictureOperation request) {
+        try {
+            String result = request.client.await();
+            String error = "unavailable".equals(result)
+                    ? "Picture controls are unavailable. Update BareHome and check its picture setup."
+                    : "error".equals(result) ? "TV could not apply the picture preset. Check Picture settings." : null;
+            finishPicture(request, error == null ? result : null, error);
+        } catch (Exception failure) {
+            finishPicture(request, null, pictureError(failure));
+        }
+    }
+
+    private void finishPicture(PictureOperation request, String result, String error) {
+        Operation operation = request.operation;
+        synchronized (connectionLock) {
+            if (!operation.completed.compareAndSet(false, true)) return;
+            if (request.client != null) request.client.close();
+            pictureRequests.remove(request);
+        }
+        main.removeCallbacks(operation.timeout);
+        main.post(() -> {
+            if (current(operation) && request.revision == pictureRevision.get()
+                    && !"Control cancelled".equals(error)) {
+                publishPictureState(error == null && confirmedState(result) ? result : "unknown");
+            }
+            if (operation.completion != null || request.revision == pictureRevision.get())
+                finish(operation.completion, request.quiet ? null : error, operation.token,
+                        operation.widgetToken, operation.foregroundToken, false);
+        });
+    }
+
+    private void cancelInactivePictureRequests() {
+        for (PictureOperation request : new HashSet<>(pictureRequests)) {
+            Operation operation = request.operation;
+            boolean active = operation.widgetToken != -1 ? widgetSessionActive : foreground;
+            if (!current(operation) || !active) finishPicture(request, null, "Control cancelled");
+        }
+    }
+
+    private static String pictureError(Exception failure) {
+        if (failure instanceof UnsupportedOperationException) return failure.getMessage();
+        return "Could not confirm TV picture mode. Update BareHome or tap Sync; the command is not repeated.";
+    }
+
+    private static boolean confirmedState(String state) {
+        return "day".equals(state) || "night".equals(state) || "custom".equals(state);
+    }
+
+    private String pictureScope() {
+        if (!isPaired()) return "";
+        try { return host + ":" + PictureStateWire.hex(MessageDigest.getInstance("SHA-256").digest(pin)); }
+        catch (NoSuchAlgorithmException impossible) { throw new IllegalStateException(impossible); }
+    }
+
+    private void publishPictureState(String value) {
+        confirmedPicture = value;
+        preferences.edit().putString("picture_scope", pictureScope()).putString("picture_state", value).apply();
+        Listener target = listener;
+        if (target != null) target.onPictureState(value);
+        RemoteWidget.updateAll(context);
+    }
 
     void sendPictureMode(boolean night) { sendPictureMode(night, null); }
     void sendPictureMode(boolean night, Completion completion) { command(0, false, night, completion); }
@@ -288,6 +445,7 @@ final class RemoteEngine {
                 else if (key == KeyEvent.KEYCODE_TV_INPUT) connection.sendInputPicker();
                 else if (longPress) connection.sendLongKey(key); else connection.sendKey(key);
                 synchronized (connectionLock) { operation.writing = null; }
+                if (pictureNight != null) pictureRequest(false, null, operation.widgetToken != -1, true);
                 if (completion == null) {
                     complete(operation, null);
                 } else {
@@ -321,11 +479,12 @@ final class RemoteEngine {
         // Guarded by connectionLock. Non-null only while this operation writes.
         TvProtocol.Remote writing;
         Runnable timeout;
-        Operation(int token, Completion completion) {
+        Operation(int token, Completion completion) { this(token, completion, completion != null); }
+        Operation(int token, Completion completion, boolean widgetOwner) {
             this.token = token;
             this.completion = completion;
-            this.widgetToken = completion == null ? -1 : widgetGeneration.get();
-            this.foregroundToken = completion == null ? foregroundGeneration.get() : -1;
+            this.widgetToken = widgetOwner ? widgetGeneration.get() : -1;
+            this.foregroundToken = widgetOwner ? -1 : foregroundGeneration.get();
         }
     }
 
@@ -347,7 +506,7 @@ final class RemoteEngine {
     }
 
     private boolean canRun(Operation operation) throws SocketTimeoutException {
-        boolean ownerActive = operation.completion == null ? foreground : widgetSessionActive;
+        boolean ownerActive = operation.widgetToken == -1 ? foreground : widgetSessionActive;
         if (operation.completed.get() || !current(operation) || !ownerActive || pairingBusy) return false;
         if (SystemClock.elapsedRealtime() >= operation.deadline) throw new SocketTimeoutException("Command expired");
         return true;
@@ -452,7 +611,8 @@ final class RemoteEngine {
                 boolean valid = current(token) && (widgetToken == -1 || widgetGeneration.get() == widgetToken);
                 completion.done(valid ? error : "Control cancelled");
             }
-            else if (current(token) && (foregroundToken == -1 || foregroundGeneration.get() == foregroundToken)) {
+            else if (current(token) && (foregroundToken == -1 || foregroundGeneration.get() == foregroundToken)
+                    && (widgetToken == -1 || widgetGeneration.get() == widgetToken)) {
                 if (error != null) publishError(error, token);
                 else if (sentState) publishState("Sent", token);
             }

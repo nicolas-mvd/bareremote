@@ -19,7 +19,8 @@ class ProtocolTests(unittest.TestCase):
             ], check=True, capture_output=True, text=True)
             subprocess.run([
                 "javac", "--release", "8", "-d", str(tmp),
-                str(java / "Proto.java"), str(java / "TvProtocol.java"), str(root / "tests/ProtocolTest.java"),
+                str(java / "Proto.java"), str(java / "TvProtocol.java"), str(java / "PictureStateWire.java"),
+                str(java / "PictureStateClient.java"), str(root / "tests/ProtocolTest.java"),
                 str(root / "tests/ProtocolCli.java"),
             ], check=True, capture_output=True, text=True)
             result = subprocess.run([

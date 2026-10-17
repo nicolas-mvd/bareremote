@@ -101,6 +101,23 @@ final class RemoteWidget {
     static void updateAll(android.content.Context context,String status) {}
 }
 """,
+    "uy/nico/bareremote/PictureStateClient.java": """
+package uy.nico.bareremote;
+import java.io.*;
+import java.util.concurrent.*;
+final class PictureStateClient {
+    final CountDownLatch ready = new CountDownLatch(1);
+    volatile boolean closed;
+    volatile String state = "day";
+    String await() throws Exception {
+        if (!ready.await(4, TimeUnit.SECONDS)) throw new java.net.SocketTimeoutException();
+        if (closed) throw new IOException("Closed");
+        return state;
+    }
+    void reply(String value) { state = value; ready.countDown(); }
+    void close() { closed = true; ready.countDown(); }
+}
+""",
     "uy/nico/bareremote/TvProtocol.java": """
 package uy.nico.bareremote;
 import java.util.concurrent.*;
@@ -117,7 +134,9 @@ final class TvProtocol {
         static final java.util.List<Boolean> modes = new CopyOnWriteArrayList<>();
         static final java.util.List<String> inputs = new CopyOnWriteArrayList<>();
         static volatile CountDownLatch connectGate, connectEntered, writeEntered;
-        static volatile boolean blockWrite;
+        static volatile boolean blockWrite, holdPictureReplies, unsupportedPicture;
+        static final java.util.List<PictureStateClient> pictureRequests = new CopyOnWriteArrayList<>();
+        static final java.util.List<Boolean> pictureToggles = new CopyOnWriteArrayList<>();
         volatile boolean open=true;
         final CountDownLatch closed = new CountDownLatch(1);
         static Remote connect(String host,int port,byte[] pin,PhoneIdentity identity) throws Exception {
@@ -134,9 +153,17 @@ final class TvProtocol {
         }
         void sendInputPicker() throws Exception { if (!open) throw new java.io.IOException("Closed"); inputs.add("picker"); }
         void sendPictureMode(boolean night) throws Exception { if (!open) throw new java.io.IOException("Closed"); modes.add(night); }
+        PictureStateClient openPictureStateRequest(int timeout) {
+            if (unsupportedPicture) throw new UnsupportedOperationException("Picture unsupported");
+            return new PictureStateClient();
+        }
+        void sendPictureStateRequest(PictureStateClient client, boolean toggle) {
+            pictureRequests.add(client); pictureToggles.add(toggle);
+            if (!holdPictureReplies) client.reply(toggle ? "night" : "day");
+        }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; }
+        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; }
     }
 }
 """,
@@ -154,6 +181,7 @@ class EngineTest(unittest.TestCase):
                 path.write_text(source)
                 sources.append(str(path))
             sources += [str(ROOT / "app/src/main/java/uy/nico/bareremote/RemoteEngine.java"),
+                        str(ROOT / "app/src/main/java/uy/nico/bareremote/PictureStateWire.java"),
                         str(ROOT / "tests/EngineTest.java")]
             subprocess.run(["javac", "--release", "8", "-d", str(base), *sources], check=True)
             subprocess.run(["java", "-cp", str(base), "uy.nico.bareremote.EngineTest"], check=True, timeout=20)

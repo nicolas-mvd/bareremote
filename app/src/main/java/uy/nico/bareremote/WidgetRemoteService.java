@@ -19,6 +19,7 @@ import android.view.KeyEvent;
 public final class WidgetRemoteService extends Service {
     static final String ACTION_KEY = "uy.nico.bareremote.WIDGET_KEY";
     static final String ACTION_SYNC = "uy.nico.bareremote.WIDGET_SYNC";
+    static final String ACTION_TOGGLE_MODE = "uy.nico.bareremote.WIDGET_TOGGLE_MODE";
     static final String ACTION_PICTURE_MODE = "uy.nico.bareremote.WIDGET_PICTURE_MODE";
     static final String EXTRA_NIGHT = "night";
     static final String ACTION_STOP = "uy.nico.bareremote.WIDGET_STOP";
@@ -53,6 +54,11 @@ public final class WidgetRemoteService extends Service {
         return new Intent(context, WidgetRemoteService.class).setAction(ACTION_SYNC);
     }
 
+    static Intent toggleModeIntent(Context context) {
+        return new Intent(context, WidgetRemoteService.class).setAction(ACTION_TOGGLE_MODE);
+    }
+
+    // Keep old explicit Day/Night PendingIntents functional across an APK update.
     static Intent pictureModeIntent(Context context, boolean night) {
         return new Intent(context, WidgetRemoteService.class)
                 .setAction(ACTION_PICTURE_MODE).putExtra(EXTRA_NIGHT, night);
@@ -96,9 +102,10 @@ public final class WidgetRemoteService extends Service {
 
         int key = intent == null ? KeyEvent.KEYCODE_UNKNOWN
                 : intent.getIntExtra(EXTRA_KEY, KeyEvent.KEYCODE_UNKNOWN);
-        boolean pictureMode = ACTION_PICTURE_MODE.equals(action) && intent.hasExtra(EXTRA_NIGHT);
+        final boolean pictureMode = ACTION_PICTURE_MODE.equals(action) && intent.hasExtra(EXTRA_NIGHT);
+        final boolean toggleMode = ACTION_TOGGLE_MODE.equals(action);
         final boolean night = pictureMode && intent.getBooleanExtra(EXTRA_NIGHT, false);
-        if (!ACTION_SYNC.equals(action) && !pictureMode
+        if (!ACTION_SYNC.equals(action) && !pictureMode && !toggleMode
                 && !(ACTION_KEY.equals(action) && RemoteWidget.supportedKey(key))) {
             endSession("Tap to connect");
             return START_NOT_STICKY;
@@ -116,7 +123,8 @@ public final class WidgetRemoteService extends Service {
         main.postDelayed(idleStop, IDLE_MS);
         final long sequence = ++actionSequence;
         final boolean sync = ACTION_SYNC.equals(action);
-        final String label = pictureMode ? night ? "Night" : "Day" : RemoteWidget.keyLabel(key);
+        final String label = toggleMode ? "Day/Night"
+                : pictureMode ? night ? "Night" : "Day" : RemoteWidget.keyLabel(key);
         RemoteWidget.updateAll(this, sync ? "Syncing…" : "Sending · " + label);
         RemoteEngine.Completion completion = error -> {
             if (!sessionActive || sequence != actionSequence) return;
@@ -125,17 +133,27 @@ public final class WidgetRemoteService extends Service {
                 return;
             }
             RemoteWidget.updateAll(this, error == null
-                    ? sync ? "Connected" : pictureMode ? label + " requested" : "Sent · " + label
-                    : pictureMode ? "Day/Night unavailable · open app" : "Sync to reconnect");
+                    ? sync ? "Connected" : toggleMode ? confirmedPictureStatus()
+                            : pictureMode ? label + " requested" : "Sent · " + label
+                    : pictureMode || toggleMode ? "Day/Night unavailable · open app" : "Sync to reconnect");
         };
         try {
             if (sync) engine.reconnect(completion);
+            else if (toggleMode) engine.togglePictureMode(completion);
             else if (pictureMode) engine.sendPictureMode(night, completion);
             else engine.sendWidgetKey(key, completion);
         } catch (RuntimeException failure) {
             completion.done("Could not send control");
         }
         return START_NOT_STICKY;
+    }
+
+    private String confirmedPictureStatus() {
+        String state = engine.pictureState();
+        if ("day".equals(state)) return "Day confirmed";
+        if ("night".equals(state)) return "Night confirmed";
+        if ("custom".equals(state)) return "Custom picture levels";
+        return "Day/Night state unavailable";
     }
 
     private Notification notification() {

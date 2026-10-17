@@ -49,12 +49,34 @@ BareHome 1.1 accepts only the fixed picture/input links and independently valida
 
 ## Small scope and limits
 
+Version 0.3 adds optional TV-confirmed state/toggle requests. See
+[the picture-state protocol](PICTURE_STATE.md) for its strict app-link format,
+one-shot UDP reply, authentication, replay bounds and icon semantics. The TCP
+connection remains the same pinned Remote v2 session. Reply waits use a separate
+bounded worker; regular key dispatch does not wait for them. Sync reports the
+remote connection first and refreshes the mode asynchronously. Query failures
+leave normal controls usable, and toggles are never automatically repeated.
+
 Ping, key, power, volume and app-link features are negotiated. Keyboard/IME and voice features are not requested. App-link support is intersected with the server’s advertised capabilities; a server without it can still receive normal keys. The remote becomes ready only after configuration and a start message; standby still permits a wake key. A single reader answers server pings while a session is open. The Android engine and service manage connection ownership; the standalone protocol layer does not start Android services.
 
 Frames are varint length-delimited, limited to 64 KiB and 4096 fields. The parser rejects truncation, integer overflow, invalid tags and deprecated group wire types. Unknown ordinary fields can be skipped. A remote connection has a shared five-second network deadline; incomplete frames also have a deadline. Connections require a numeric IP address so DNS cannot exceed that budget. An idle remote read expires after sixteen seconds. Long keys send start, wait 650 ms, and send end even when the calling worker is interrupted. A command is not retried by this layer.
 
 Run `python3 -m unittest discover -s tests -p 'test_*.py'`. The protocol suite has passed **156 assertions** covering independent wire/hash vectors, malformed and fragmented frames, actual loopback mutual TLS pairing, server pinning, ping responses, standby readiness, bounded long presses and the connect deadline. An input-registration regression drops keys received before the simulated device is ready, even if the connection remains open afterward; the startup wait lets exactly one key apply. A separate deferred-dispatch regression reproduces a received key being lost by immediate disconnect, then verifies that the delivery window applies exactly one key while answering pings. Cancellation and interruption remain prompt. Loopback tests do not establish compatibility with a physical TV or validate Android service lifecycle behavior. The engine suite also passes **55 assertions** against deterministic scheduling and network test doubles, covering rapid keys, shared ownership, Sync, timeouts, and cancellation. [The README](../README.md#prototype-limits-and-validation) distinguishes Android integration and hardware results.
 
-`tests/ProtocolCli.java` is an optional manual hardware harness. Compile it with the two protocol classes using a Java 8+ JDK. Supply a test-only RSA PKCS12 client identity and its password through `BAREREMOTE_STORE_PASSWORD`. The `pair TV_IP client.p12 tv-pin.der` command waits for the TV code on standard input; `check` verifies readiness without sending a key. Only explicit `key ... KEYCODE` or `long ... KEYCODE` commands send input. Keep the identity and saved pin outside the source tree and do not distribute a paired identity with an APK.
+`tests/ProtocolCli.java` is an optional manual hardware harness. Compile it with `Proto.java`, `TvProtocol.java`, `PictureStateWire.java` and `PictureStateClient.java` using a Java 8+ JDK. Supply a test-only RSA PKCS12 client identity and its password through `BAREREMOTE_STORE_PASSWORD`. The `pair TV_IP client.p12 tv-pin.der` command waits for the TV code on standard input; `check` verifies readiness without sending a key. Only explicit `key ... KEYCODE` or `long ... KEYCODE` commands send input. Keep the identity and saved pin outside the source tree and do not distribute a paired identity with an APK.
 
 For emulator integration, run `python3 tests/run_fake_tv.py` and enter `10.0.2.2` in the app. The fake server listens only on host loopback ports 6467/6466, prints a test pairing code, and requires a real mutual-TLS client certificate. `KEY` records receipt. Keys arriving within 200 ms after `RemoteStart` are discarded with `KEY_IGNORED_NOT_READY`; accepted keys produce `KEY_APPLIED` after a further 250 ms simulated dispatch delay only if the session remains alive. Disconnect cancels queued keys, so receipt alone is not a passing widget check. Its temporary certificate and in-memory pairing list disappear when it stops, so each restart requires pairing again. It never contacts a physical TV. This exercises the installed Android app, its Keystore identity, and widget command path without interrupting TV viewing; it does not establish physical-TV compatibility.
+
+The 0.3 suites add authenticated callback and real UDP tests: **156 protocol,
+108 engine and 40 callback assertions** pass. These include forged/malformed or
+wrong-source replies, timeouts, close cancellation, stale generations and
+revisions, saved-state identity scoping, and normal key dispatch during a reply
+wait. Hardware coverage is recorded separately in the README.
+
+For opt-in emulator callback testing, set `BAREREMOTE_ADB` to the SDK adb path
+and `BAREREMOTE_EMULATOR_SERIAL` to the explicitly selected emulator serial
+before starting the fake TV. It creates short-lived local UDP console
+redirections and removes them afterward. This mock path accepts the emulator's
+Ethernet address `10.0.2.15`; disable its simulated Wi-Fi if routing selects
+`10.0.2.16`. It never forwards callbacks to LAN devices and does not log request
+secrets. Production phones use their actual local address without redirection.
