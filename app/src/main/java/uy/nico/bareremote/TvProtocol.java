@@ -4,6 +4,7 @@ import java.io.Closeable;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.math.BigInteger;
 import java.net.InetSocketAddress;
@@ -27,6 +28,8 @@ public final class TvProtocol {
     public static final int REMOTE_PORT = 6466;
     public static final int PAIRING_PORT = 6467;
     public static final int REMOTE_CONNECT_TIMEOUT_MS = 5000;
+    public static final int DELIVERY_WINDOW_MS = 750;
+    public static final int INPUT_READY_DELAY_MS = 250;
     private static final int CONNECT_TIMEOUT_MS = 2000;
     private static final int HANDSHAKE_TIMEOUT_MS = 6000;
     private static final int REMOTE_IDLE_TIMEOUT_MS = 16000;
@@ -163,7 +166,9 @@ public final class TvProtocol {
         private final OutputStream out;
         private final Object outputLock = new Object();
         private final Object keyLock = new Object();
+        private final Object deliveryLock = new Object();
         private volatile boolean closed;
+        private long lastKeyWriteNanos;
         private int features;
         private boolean configured;
 
@@ -202,6 +207,7 @@ public final class TvProtocol {
                 }, "BareRemote-TV");
                 reader.setDaemon(true);
                 reader.start();
+                remote.awaitInputReady(deadline);
                 return remote;
             } catch (Exception failure) {
                 connection.close();
@@ -213,9 +219,58 @@ public final class TvProtocol {
             return !closed && connection.isOpen();
         }
 
+        /** START can precede Android InputReader registering the TV's virtual remote. */
+        private void awaitInputReady(long connectionDeadline) throws IOException {
+            long inputReadyAt = System.nanoTime() + INPUT_READY_DELAY_MS * 1000000L;
+            synchronized (deliveryLock) {
+                for (;;) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedIOException("TV activation wait interrupted");
+                    }
+                    if (!isOpen()) throw new IOException("TV disconnected while activating the remote");
+                    long now = System.nanoTime();
+                    if (now >= connectionDeadline) throw new java.net.SocketTimeoutException("TV activation timed out");
+                    long remaining = inputReadyAt - now;
+                    if (remaining <= 0) return;
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(deliveryLock, Math.min(remaining, connectionDeadline - now));
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new InterruptedIOException("TV activation wait interrupted");
+                    }
+                }
+            }
+        }
+
         public void sendKey(int androidKeyCode) throws IOException {
             synchronized (keyLock) {
                 sendKeyDirection(androidKeyCode, 3);
+            }
+        }
+
+        /**
+         * Keep a one-command session alive while the TV dispatches its queued input.
+         * Worker-only: waits at most 750 ms from the latest successful key write while
+         * the reader continues answering pings. This is a grace period, not a key ACK.
+         * Cancellation/close interrupts the wait; no key is sent or retried here.
+         */
+        public void awaitCommandDeliveryWindow() throws IOException {
+            synchronized (deliveryLock) {
+                if (lastKeyWriteNanos == 0) throw new IllegalStateException("No command has been sent");
+                for (;;) {
+                    if (Thread.currentThread().isInterrupted()) {
+                        throw new InterruptedIOException("Command delivery wait interrupted");
+                    }
+                    if (!isOpen()) throw new IOException("TV disconnected after send; delivery is uncertain");
+                    long remaining = lastKeyWriteNanos + DELIVERY_WINDOW_MS * 1000000L - System.nanoTime();
+                    if (remaining <= 0) return;
+                    try {
+                        TimeUnit.NANOSECONDS.timedWait(deliveryLock, remaining);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new InterruptedIOException("Command delivery wait interrupted");
+                    }
+                }
             }
         }
 
@@ -241,6 +296,10 @@ public final class TvProtocol {
         private void sendKeyDirection(int key, int direction) throws IOException {
             if (key < 1 || key > 304) throw new IllegalArgumentException("Unsupported Android key");
             send(new Proto.Writer().message(10, new Proto.Writer().number(1, key).number(2, direction)));
+            synchronized (deliveryLock) {
+                lastKeyWriteNanos = System.nanoTime();
+                deliveryLock.notifyAll();
+            }
         }
 
         private boolean handle(Proto.Message message) throws IOException {
@@ -250,7 +309,7 @@ public final class TvProtocol {
                 features = (int) supported & FEATURES;
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.1");
+                        .text(5, "uy.nico.bareremote").text(6, "0.1.1");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;
@@ -288,6 +347,7 @@ public final class TvProtocol {
         @Override public void close() {
             closed = true;
             connection.close();
+            synchronized (deliveryLock) { deliveryLock.notifyAll(); }
         }
     }
 

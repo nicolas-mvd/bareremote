@@ -24,7 +24,8 @@ class ProtocolTests(unittest.TestCase):
             ], check=True, capture_output=True, text=True)
             result = subprocess.run([
                 "java", "-cp", str(tmp), "uy.nico.bareremote.ProtocolTest", str(store),
-            ], check=True, capture_output=True, text=True, timeout=40)
+            ], check=False, capture_output=True, text=True, timeout=40)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             print(result.stdout.strip())
 
 

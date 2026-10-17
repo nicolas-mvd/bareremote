@@ -2,13 +2,15 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.1.** Android 8+; targets Android 15. Physical phones and TV compatibility have not yet been tested. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome.
+**Prototype, version 0.1.1.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.1.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.1.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.1.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.1.1-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). Screenshots are from the Android emulator, paired with a local simulated TV.
 
 ## Use it
+
+**Upgrading from 0.1.0?** Install this APK over the existing app to preserve pairing. **Do not uninstall first.** Open BareRemote once after updating, then try the widget.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup**, enter the TV’s IPv4 address, and tap **Pair**. Find the address in the TV’s network settings.
@@ -25,6 +27,10 @@ Tap **Add widget** in the app and accept your launcher’s prompt. Alternatively
 The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. Its header opens the app; its buttons send commands directly. Pair once in the app first.
 
 Long-OK is available in the app only: home-screen launchers use widget long presses for moving and resizing. The widget does no scheduled polling and starts network work only when you press a control.
+
+Version 0.1.1 fixes commands arriving before the TV has activated its remote, or the connection closing before the TV handles the command. It adds a brief startup wait and keeps each widget connection alive briefly after sending. The widget shows the selected control in its status, such as **Sending · Right** and **Sent · Right**. “Sent” confirms transmission, not an acknowledgment of the TV’s action.
+
+Each widget tap uses a short connection, so rapid taps queue up. The app keeps its connection while open and responds faster when navigating repeatedly.
 
 ## Build
 
@@ -47,8 +53,12 @@ See [protocol notes and primary implementation references](docs/PROTOCOL.md) for
 
 ## Prototype limits and validation
 
-One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, cloud requests, foreground services, or idle widget updates. A connection is kept only while the app is foreground; widget commands use bounded connections. Manufacturer-specific behavior remains unverified.
+One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, cloud requests, foreground services, or idle widget updates. A connection is kept only while the app is foreground; widget commands use bounded connections. Behavior on other manufacturers remains unverified.
 
-The protocol suite has passed **108 assertions**, including loopback mutual TLS against a mock TV. On an Android 15 emulator, the actual APK paired using Android Keystore and delivered all 12 buttons from both the app and widget to a simulated TV. App long-OK, saved pairing, widget pinning, full-page resizing, and widget use after app-process termination were also checked. The launcher remained visible during widget commands. Returning home and reopening the app completed without crashes. Offline errors and rejection of a changed TV certificate were verified.
+The current protocol suite has passed **143 assertions**, including loopback mutual TLS against a mock TV.
 
-These checks do not establish physical-phone or TV compatibility; hardware testing was deferred while the TV was in use. The download is marked as a prerelease until real-device testing is complete.
+The original 0.1.0 checks used the actual APK on an Android 15 emulator with a simulated TV: all 12 app and widget buttons, app long-OK, saved pairing, widget pinning and full-page resizing, widget use after app-process termination, offline errors, and rejection of a changed TV certificate. Widget commands kept the launcher visible; returning home and reopening the app did not crash.
+
+Version 0.1.1 has now controlled a **physical CSV4K / KTC_MOTOROLA_4K_SA_21V2 TV running Android 11**, using the signed APK on an Android 15 emulator. App and widget navigation worked, including a widget command after confirming the app process had stopped. This verifies that TV with an emulated phone, not every phone/TV combination.
+
+On a **Samsung Galaxy S24 Ultra**, the user reported that 0.1.0 app controls worked but its widget did not. The 0.1.1 fix still needs confirmation on that phone. No other physical phones or TV models have been tested.

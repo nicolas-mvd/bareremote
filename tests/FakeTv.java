@@ -13,6 +13,8 @@ import java.security.interfaces.RSAPublicKey;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -20,6 +22,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLServerSocket;
@@ -136,10 +139,13 @@ public final class FakeTv {
         if ((features & 2) == 0) throw new IOException("Client has no key support");
         write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, features)));
         read(socket).message(2);
+        final long inputReadyAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
         write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
         System.out.println("REMOTE_READY id=" + session + " features=" + features + " mutualTLS=true");
         socket.setSoTimeout(20000);
         final AtomicInteger pingId = new AtomicInteger();
+        final AtomicBoolean live = new AtomicBoolean(true);
+        final List<ScheduledFuture<?>> pendingKeys = new ArrayList<ScheduledFuture<?>>();
         ScheduledFuture<?> ping = timers.scheduleAtFixedRate(new Runnable() {
             @Override public void run() {
                 try {
@@ -155,10 +161,22 @@ public final class FakeTv {
                 Proto.Message message = read(socket);
                 if (message.has(10)) {
                     Proto.Message key = message.message(10);
+                    final long code = key.integer(1, -1);
                     long direction = key.integer(2, 0);
-                    System.out.println("KEY id=" + session + " code=" + key.integer(1, -1)
-                            + " direction=" + (direction == 3 ? "SHORT" : direction == 1 ? "START_LONG"
-                            : direction == 2 ? "END_LONG" : "UNKNOWN"));
+                    final String directionName = direction == 3 ? "SHORT" : direction == 1 ? "START_LONG"
+                            : direction == 2 ? "END_LONG" : "UNKNOWN";
+                    System.out.println("KEY id=" + session + " code=" + code + " direction=" + directionName);
+                    if (System.nanoTime() < inputReadyAt) {
+                        System.out.println("KEY_IGNORED_NOT_READY id=" + session + " code=" + code);
+                        continue;
+                    }
+                    // Receiving bytes is not dispatching input. Model a TV queue tied to its session.
+                    pendingKeys.add(timers.schedule(new Runnable() {
+                        @Override public void run() {
+                            if (live.get()) System.out.println("KEY_APPLIED id=" + session
+                                    + " code=" + code + " direction=" + directionName);
+                        }
+                    }, 250, TimeUnit.MILLISECONDS));
                 } else if (message.has(9)) {
                     long value = message.message(9).integer(1, 0);
                     if (value == 1) System.out.println("PING_OK id=" + session);
@@ -167,6 +185,8 @@ public final class FakeTv {
                 }
             }
         } finally {
+            live.set(false);
+            for (ScheduledFuture<?> pending : pendingKeys) pending.cancel(false);
             ping.cancel(false);
         }
     }

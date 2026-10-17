@@ -39,6 +39,9 @@ public final class ProtocolTest {
         testPairing(context, identity, pin);
         testPairingCancellation(context, identity);
         testRemote(context, identity, pin);
+        testInputRegistrationDelay(context, identity, pin);
+        testDeferredDispatch(context, identity, pin);
+        testDeliveryWaitCancellation(context, identity, pin);
         testImmediateClose(context, identity, pin);
         testPinAndTimeout(context, identity, pin);
         System.out.println("Protocol: " + assertions + " assertions passed");
@@ -295,6 +298,173 @@ public final class ProtocolTest {
             if (cleanupAlive) Thread.sleep(20);
         } while (cleanupAlive && System.nanoTime() < deadline);
         check(!cleanupAlive, "TLS cleanup does not retain a permanent idle thread");
+    }
+
+    /** The TV receives a key first, then dispatches it later; disconnect cancels its queue. */
+    private static void testDeferredDispatch(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        for (final boolean waitForDispatch : new boolean[] {false, true}) {
+            final CountDownLatch received = new CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicInteger applied = new java.util.concurrent.atomic.AtomicInteger();
+            final java.util.concurrent.atomic.AtomicInteger pings = new java.util.concurrent.atomic.AtomicInteger();
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    startRemote(socket);
+                    Proto.Message key = read(socket).message(10);
+                    check(key.integer(1, -1) == 3 && key.integer(2, -1) == 3, "deferred TV receives one short key");
+                    long dispatchAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(250);
+                    write(socket, new Proto.Writer().message(8, new Proto.Writer().number(1, 456)));
+                    received.countDown();
+                    for (;;) {
+                        long left = (dispatchAt - System.nanoTime()) / 1000000L;
+                        if (left <= 0) { applied.incrementAndGet(); break; }
+                        socket.setSoTimeout((int) Math.max(1, left));
+                        try {
+                            Proto.Message incoming = read(socket);
+                            check(incoming.has(9), "delivery window does not resend a key");
+                            check(incoming.message(9).integer(1, 0) == 456, "ping remains responsive during dispatch wait");
+                            pings.incrementAndGet();
+                        } catch (java.net.SocketTimeoutException dispatchNow) {
+                            applied.incrementAndGet();
+                            break;
+                        } catch (java.io.EOFException disconnected) {
+                            return; // Model TV service removing this session's pending input.
+                        } catch (java.net.SocketException disconnected) {
+                            return; // Closing with an unread server update can reset TCP as well.
+                        }
+                    }
+                    socket.setSoTimeout(2000);
+                    check(socket.getInputStream().read() == -1, "one-command session closes after dispatch window");
+                }
+            });
+            TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+            remote.sendKey(3);
+            check(received.await(2, TimeUnit.SECONDS), "TV has received key before session cleanup");
+            long start = System.nanoTime();
+            if (waitForDispatch) remote.awaitCommandDeliveryWindow();
+            remote.close();
+            server.finish();
+            check(applied.get() == (waitForDispatch ? 1 : 0), waitForDispatch
+                    ? "delivery window lets deferred TV apply key exactly once"
+                    : "regression baseline: receive then immediate close loses deferred dispatch");
+            if (waitForDispatch) {
+                check(pings.get() == 1, "reader handles ping while one-command session stays alive");
+                long elapsed = (System.nanoTime() - start) / 1000000L;
+                check(elapsed >= 500 && elapsed < 1500, "delivery grace is bounded below the broadcast budget");
+            }
+        }
+    }
+
+    /** A START announcement can precede the virtual input device becoming usable. */
+    private static void testInputRegistrationDelay(SSLContext context, TvProtocol.Identity identity, byte[] pin)
+            throws Exception {
+        for (final boolean waitForRegistration : new boolean[] {false, true}) {
+            final java.util.concurrent.atomic.AtomicInteger received = new java.util.concurrent.atomic.AtomicInteger();
+            final java.util.concurrent.atomic.AtomicInteger applied = new java.util.concurrent.atomic.AtomicInteger();
+            final java.util.concurrent.atomic.AtomicInteger pings = new java.util.concurrent.atomic.AtomicInteger();
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 99)));
+                    read(socket).message(1);
+                    write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 99)));
+                    read(socket).message(2);
+                    long registeredAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
+                    write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
+                    write(socket, new Proto.Writer().message(8, new Proto.Writer().number(1, 789)));
+                    for (;;) {
+                        try {
+                            Proto.Message message = read(socket);
+                            if (message.has(9)) {
+                                check(message.message(9).integer(1, 0) == 789, "activation wait answers ping");
+                                pings.incrementAndGet();
+                            } else {
+                                Proto.Message key = message.message(10);
+                                check(key.integer(1, 0) == 3 && key.integer(2, 0) == 3, "registration TV gets intended short key");
+                                received.incrementAndGet();
+                                if (System.nanoTime() >= registeredAt) applied.incrementAndGet();
+                                // Early keys are discarded, even if the session remains open afterward.
+                            }
+                        } catch (java.io.EOFException disconnected) { return; }
+                        catch (java.net.SocketException disconnected) { return; }
+                    }
+                }
+            });
+            if (waitForRegistration) {
+                TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+                remote.sendKey(3);
+                remote.awaitCommandDeliveryWindow();
+                remote.close();
+            } else {
+                // Independent baseline: complete wire handshake, send immediately, keep open afterward.
+                try (SSLSocket socket = (SSLSocket) context.getSocketFactory().createSocket("127.0.0.1", server.port())) {
+                    socket.setEnabledProtocols(new String[] {"TLSv1.2"});
+                    socket.setSoTimeout(3000);
+                    socket.startHandshake();
+                    read(socket).message(1);
+                    write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 99)));
+                    read(socket).message(2);
+                    write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 99)));
+                    read(socket).message(40);
+                    long ping = read(socket).message(8).integer(1, 0);
+                    write(socket, new Proto.Writer().message(9, new Proto.Writer().number(1, ping)));
+                    write(socket, new Proto.Writer().message(10, new Proto.Writer().number(1, 3).number(2, 3)));
+                    Thread.sleep(750);
+                }
+            }
+            server.finish();
+            check(received.get() == 1, "registration regression sends exactly one key without retry");
+            check(pings.get() == 1, "registration handshake keeps ping handling alive");
+            check(applied.get() == (waitForRegistration ? 1 : 0), waitForRegistration
+                    ? "pre-key registration wait applies first key exactly once"
+                    : "post-key grace alone cannot rescue an early discarded key");
+        }
+    }
+
+    private static void testDeliveryWaitCancellation(SSLContext context, TvProtocol.Identity identity, byte[] pin)
+            throws Exception {
+        for (final boolean interrupt : new boolean[] {false, true}) {
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    startRemote(socket);
+                    read(socket).message(10);
+                    check(socket.getInputStream().read() == -1, "cancelled wait never resends command");
+                }
+            });
+            final TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+            remote.sendKey(3);
+            final CountDownLatch waiting = new CountDownLatch(1);
+            final CountDownLatch finished = new CountDownLatch(1);
+            final java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread waiter = new Thread(new Runnable() {
+                @Override public void run() {
+                    waiting.countDown();
+                    try {
+                        remote.awaitCommandDeliveryWindow();
+                        failure.set(new AssertionError("cancelled wait returned normally"));
+                    } catch (IOException expected) {
+                        if (interrupt && (!(expected instanceof java.io.InterruptedIOException)
+                                || !Thread.currentThread().isInterrupted())) {
+                            failure.set(new AssertionError("wait must preserve interrupt status"));
+                        }
+                    } finally { finished.countDown(); }
+                }
+            });
+            waiter.start();
+            check(waiting.await(2, TimeUnit.SECONDS), "delivery waiter started");
+            if (interrupt) waiter.interrupt(); else remote.close();
+            check(finished.await(300, TimeUnit.MILLISECONDS), "close/interruption aborts delivery wait promptly");
+            remote.close();
+            waiter.join(1000);
+            check(failure.get() == null, "cancelled delivery reports uncertainty without retry");
+            server.finish();
+        }
+    }
+
+    private static void startRemote(SSLSocket socket) throws Exception {
+        write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 99)));
+        read(socket).message(1);
+        write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 99)));
+        read(socket).message(2);
+        write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
     }
 
     private interface Session { void run(SSLSocket socket) throws Exception; }

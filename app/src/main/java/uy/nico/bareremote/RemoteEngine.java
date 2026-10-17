@@ -236,6 +236,9 @@ final class RemoteEngine {
                 if (completed.get() || !current(token)) return;
                 if (SystemClock.elapsedRealtime() >= deadline) throw new SocketTimeoutException("Command expired");
                 if (longPress) connection.sendLongKey(key); else connection.sendKey(key);
+                // The TV may queue input after reading the key. A widget's short
+                // connection must survive that dispatch, within the same deadline.
+                if (completion != null) connection.awaitCommandDeliveryWindow();
                 // There is no key-delivery ACK; a successful write means Sent, not observed TV action.
                 synchronized (connectionLock) {
                     if (foreground && current(token)) remote = connection;

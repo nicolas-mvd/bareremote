@@ -34,6 +34,10 @@ public final class RemoteWidget extends AppWidgetProvider {
         KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
         KeyEvent.KEYCODE_POWER
     };
+    private static final String[] LABELS = {
+        "Up", "Down", "Left", "Right", "OK", "Back", "Home",
+        "Volume down", "Mute", "Volume up", "Play / pause", "Power"
+    };
 
     @Override public void onUpdate(Context context, AppWidgetManager manager, int[] ids) {
         render(context, manager, ids, null);
@@ -67,10 +71,11 @@ public final class RemoteWidget extends AppWidgetProvider {
                 finish(app, pending, finished, "Open app to pair your TV");
                 return;
             }
+            updateAll(app, "Sending · " + keyLabel(key));
             RemoteEngine.get(app).sendWidgetKey(key, error -> {
                 handler.removeCallbacks(timeout);
                 finish(app, pending, finished,
-                        error == null ? "Last command sent" : "Open app to reconnect");
+                        error == null ? "Sent · " + keyLabel(key) : "Open app to reconnect");
             });
         } catch (RuntimeException error) {
             handler.removeCallbacks(timeout);
@@ -81,6 +86,11 @@ public final class RemoteWidget extends AppWidgetProvider {
     private static boolean supportedKey(int key) {
         for (int supported : KEYS) if (supported == key) return true;
         return false;
+    }
+
+    private static String keyLabel(int key) {
+        for (int i = 0; i < KEYS.length; i++) if (KEYS[i] == key) return LABELS[i];
+        return "Control";
     }
 
     private static void finish(Context context, PendingResult pending,
