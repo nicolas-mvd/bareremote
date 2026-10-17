@@ -341,7 +341,7 @@ public final class TvProtocol {
                 features = (int) supported & FEATURES;
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.4.0");
+                        .text(5, "uy.nico.bareremote").text(6, "0.4.1");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;

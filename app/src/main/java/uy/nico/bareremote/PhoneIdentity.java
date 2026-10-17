@@ -13,6 +13,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.UUID;
 import javax.net.ssl.KeyManager;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLEngine;
@@ -23,7 +24,10 @@ import javax.security.auth.x500.X500Principal;
 
 /** Each phone has its own non-exportable identity. Pairing establishes the TV pin. */
 final class PhoneIdentity implements TvProtocol.Identity {
-    private static final String ALIAS = "bareremote.client.v2";
+    static final int VERSION = 3;
+    // Some TV trust stores index clients by certificate subject. Keep the legacy
+    // key untouched, but pair this stable, per-install subject once after upgrade.
+    private static final String ALIAS = "bareremote.client.v3";
     private PrivateKey key;
     private X509Certificate certificate;
 
@@ -44,7 +48,7 @@ final class PhoneIdentity implements TvProtocol.Identity {
                     // Conscrypt applies TLS RSA-PSS padding itself, then asks
                     // Keystore to perform the raw private-key signing operation.
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .setCertificateSubject(new X500Principal("CN=BareRemote"))
+                    .setCertificateSubject(new X500Principal("CN=BareRemote-" + UUID.randomUUID()))
                     .setCertificateSerialNumber(new BigInteger(128, new SecureRandom()).add(BigInteger.ONE))
                     .setCertificateNotBefore(new Date(1577836800000L))
                     .setCertificateNotAfter(new Date(2524608000000L))

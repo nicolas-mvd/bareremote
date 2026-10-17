@@ -17,6 +17,8 @@ import java.security.cert.X509Certificate;
 import java.security.interfaces.RSAPublicKey;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 import java.util.ArrayList;
 import java.util.List;
@@ -37,7 +39,7 @@ import javax.net.ssl.X509TrustManager;
 
 /** Loopback-only fake TV for testing an Android emulator's real Keystore/TLS/widget path. */
 public final class FakeTv {
-    private static final Set<String> pairedClients = Collections.synchronizedSet(new HashSet<String>());
+    private static final TrustedClients pairedClients = new TrustedClients();
     private static final ExecutorService connections = Executors.newFixedThreadPool(4);
     private static final ScheduledExecutorService timers = Executors.newSingleThreadScheduledExecutor();
     private static final SecureRandom random = new SecureRandom();
@@ -50,9 +52,8 @@ public final class FakeTv {
 
     public static void main(String[] args) throws Exception {
         if (args.length != 3) throw new IllegalArgumentException("FakeTv test.p12 PAIRING_PORT REMOTE_PORT");
-        SSLContext context = context(args[0]);
-        serve(context, Integer.parseInt(args[1]), true);
-        serve(context, Integer.parseInt(args[2]), false);
+        serve(context(args[0], true), Integer.parseInt(args[1]), true);
+        serve(context(args[0], false), Integer.parseInt(args[2]), false);
         System.out.println("FAKE_TV_READY loopback=127.0.0.1 emulator=10.0.2.2");
         System.out.flush();
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -137,13 +138,15 @@ public final class FakeTv {
             write(socket, new Proto.Writer().number(1, 2).number(2, 402));
             throw new IOException("Wrong pairing secret");
         }
-        pairedClients.add(clientId(socket));
+        X509Certificate certificate = clientCertificate(socket);
+        pairedClients.store(certificate);
         pairReply(socket, 41, new Proto.Writer().bytes(1, secret));
-        System.out.println("PAIRED id=" + session + " mutualTLS=true");
+        System.out.println("PAIRED id=" + session + " mutualTLS=true" + clientLabel(certificate)
+                + " trusted_clients=" + pairedClients.size());
     }
 
     private static void remote(final SSLSocket socket, final int session) throws Exception {
-        if (!pairedClients.contains(clientId(socket))) {
+        if (!pairedClients.accepts(clientCertificate(socket))) {
             System.out.println("REMOTE_REJECTED id=" + session + " reason=unpaired-client");
             return;
         }
@@ -155,7 +158,8 @@ public final class FakeTv {
         read(socket).message(2);
         final long inputReadyAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
         write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
-        System.out.println("REMOTE_READY id=" + session + " features=" + features + " mutualTLS=true at_ms=" + elapsedMs());
+        System.out.println("REMOTE_READY id=" + session + " features=" + features + " mutualTLS=true"
+                + clientLabel(clientCertificate(socket)) + " at_ms=" + elapsedMs());
         socket.setSoTimeout(20000);
         final AtomicInteger pingId = new AtomicInteger();
         final AtomicBoolean live = new AtomicBoolean(true);
@@ -283,10 +287,42 @@ public final class FakeTv {
         } catch (Exception failure) { return false; }
     }
 
-    private static String clientId(SSLSocket socket) throws Exception {
-        byte[] hash = MessageDigest.getInstance("SHA-256").digest(
-                socket.getSession().getPeerCertificates()[0].getEncoded());
-        return java.util.Base64.getEncoder().encodeToString(hash);
+    /**
+     * A deliberately small, independently written trust-store model. Some TVs
+     * replace trust by certificate subject when a phone is paired again. This
+     * catches identities that have unique keys but accidentally share a name.
+     */
+    static final class TrustedClients {
+        private final Map<String, byte[]> certificatesBySubject = new HashMap<>();
+
+        synchronized void store(X509Certificate certificate) throws java.security.cert.CertificateException {
+            String subject = certificate.getSubjectX500Principal().getName();
+            if (!certificatesBySubject.containsKey(subject) && certificatesBySubject.size() >= 64)
+                throw new java.security.cert.CertificateException("Local fake TV client limit reached");
+            certificatesBySubject.put(subject, certificate.getEncoded());
+        }
+
+        synchronized boolean accepts(X509Certificate certificate) throws java.security.cert.CertificateException {
+            byte[] trusted = certificatesBySubject.get(certificate.getSubjectX500Principal().getName());
+            return trusted != null && MessageDigest.isEqual(trusted, certificate.getEncoded());
+        }
+
+        synchronized int size() { return certificatesBySubject.size(); }
+    }
+
+    private static X509Certificate clientCertificate(SSLSocket socket) throws Exception {
+        return (X509Certificate) socket.getSession().getPeerCertificates()[0];
+    }
+
+    private static String clientLabel(X509Certificate certificate) throws Exception {
+        // Only truncated hashes of local test identities; never certificate data,
+        // real device names, private keys, or the pairing challenge response.
+        return " client=" + shortHash(certificate.getEncoded()) + " subject="
+                + shortHash(certificate.getSubjectX500Principal().getName().getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String shortHash(byte[] value) throws Exception {
+        return PictureStateWire.hex(MessageDigest.getInstance("SHA-256").digest(value)).substring(0, 12);
     }
 
     private static long elapsedMs() { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime()); }
@@ -310,7 +346,7 @@ public final class FakeTv {
         synchronized (socket) { Proto.writeFrame(socket.getOutputStream(), message.build()); }
     }
 
-    private static SSLContext context(String path) throws Exception {
+    private static SSLContext context(String path, final boolean pairing) throws Exception {
         KeyStore keys = KeyStore.getInstance("PKCS12");
         char[] password = "fake-tv-test".toCharArray();
         try (InputStream in = Files.newInputStream(Paths.get(path))) { keys.load(in, password); }
@@ -321,6 +357,8 @@ public final class FakeTv {
             public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
             public void checkClientTrusted(X509Certificate[] chain, String auth) throws java.security.cert.CertificateException {
                 if (chain == null || chain.length == 0) throw new java.security.cert.CertificateException("Client certificate required");
+                if (!pairing && !pairedClients.accepts(chain[0]))
+                    throw new java.security.cert.CertificateException("Client is not paired");
             }
             public void checkServerTrusted(X509Certificate[] chain, String auth) throws java.security.cert.CertificateException {
                 throw new java.security.cert.CertificateException("Fake TV is a server only");

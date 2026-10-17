@@ -2,15 +2,15 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.4.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.4.1.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.1-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
-**Upgrading?** Install this APK over the existing app to preserve pairing. **Do not uninstall first.** Open BareRemote once after updating, then try the widget.
+**Upgrading?** Install over the existing app. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup**, enter the TV’s IPv4 address, and tap **Pair**. Find the address in the TV’s network settings.
@@ -22,13 +22,29 @@ Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and
 
 If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
 
+## Multiple phones
+
+Each phone has its own permanent pairing identity, so both can stay paired and
+control the TV at the same time. Pair each phone separately; neither needs to
+forget the TV when the other connects. Their commands share the same TV: pressing
+different directions at the same time still sends both commands to it.
+
+Version 0.4.0 and earlier used the same certificate name on every phone. The
+remote service on our CSV4K TV replaces an older pairing with the same name,
+even when the keys are different. Version 0.4.1 generates a random name once per
+installation and retains it in Android Keystore. Both phones need one explicit
+pairing after this upgrade. Sync cannot repair an old pairing the TV has replaced.
+No TV reset, developer mode, or BareHome update is needed.
+
 ## Updates
 
 Open the gear (Setup) → **Check for updates**. Download a newer release, then
 confirm installation with Android. Android may first ask you to allow BareRemote
-to install unknown apps. Pairing and widget settings survive an in-place update.
-There are no automatic phone checks or background downloads. This first updater
-enabled APK must be installed manually; later versions can update through the app.
+to install unknown apps. Widget settings survive an in-place update. Pairing also
+survives normal updates; the one-time 0.4.1 identity migration above is an exception.
+There are no automatic phone checks or background downloads. If you already have
+0.4.0, use its updater to install this version. Older versions need one manual APK
+installation to gain the updater.
 See [update checks, verification and release instructions](docs/UPDATES.md).
 
 ## Day/Night from the phone
@@ -119,3 +135,14 @@ A lower-version fixture using the production updater downloaded the published
 0.4 APK from GitHub and completed Android's installer on the Android 15 emulator.
 The installed release reported up to date and its update screen fit a 320dp-wide
 phone layout. The phone updater has not yet been tested on a physical Samsung.
+
+Version **0.4.1** fixes pairing on multiple phones. Five host suites pass **487
+assertions**, including same-subject trust replacement, simultaneous mutual-TLS
+clients, reconnection, pin rejection, and migration failure/cancellation.
+Two separate Android 15 emulator installations reproduced the 0.4.0 bug using
+their actual Android Keystore keys, then upgraded in place to 0.4.1. Both retained
+the TV address and displayed the one-time pairing prompt. Each received a distinct
+persistent identity after pairing. Both sent controls on simultaneous connections;
+Sync and a process restart reused the first identity while the second stayed
+connected. This is emulator evidence against a local simulated TV; physical-phone
+confirmation of 0.4.1 is pending.

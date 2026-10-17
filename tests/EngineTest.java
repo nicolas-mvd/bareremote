@@ -1,6 +1,7 @@
 package uy.nico.bareremote;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Handler;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -28,15 +29,154 @@ public final class EngineTest {
         pauseThenResume();
         syncDuringConnect();
         blockedWriteTimeout();
+        identityUpgradeBlocksUntilPairing();
+        identityUpgradeFailuresAndCancellation();
+        identityUpgradeSavedOnlyOnSuccess();
+        freshIdentityPairing();
         System.out.println("Engine tests: " + assertions + " assertions passed");
     }
 
     private static RemoteEngine engine() throws Exception {
+        return engine(new Context());
+    }
+
+    private static RemoteEngine engine(Context context) throws Exception {
         Handler.reset();
         TvProtocol.Remote.reset();
+        TvProtocol.Pairing.reset();
         Constructor<RemoteEngine> constructor = RemoteEngine.class.getDeclaredConstructor(Context.class);
         constructor.setAccessible(true);
-        return constructor.newInstance(new Context());
+        return constructor.newInstance(context);
+    }
+
+    private static Context legacyContext() {
+        Context context = new Context();
+        context.getSharedPreferences("remote", Context.MODE_PRIVATE).edit().remove("pairing_identity_version").apply();
+        return context;
+    }
+
+    private static void identityUpgradeBlocksUntilPairing() throws Exception {
+        Context context = legacyContext();
+        RemoteEngine engine = engine(context);
+        try {
+            check(engine.hasSavedTv() && engine.needsPairingUpgrade() && !engine.isPaired(),
+                    "legacy trust is saved but not usable with the new identity");
+            check("192.0.2.1".equals(engine.host()), "upgrade preserves saved TV address");
+            check(RemoteEngine.PAIRING_UPGRADE_MESSAGE.equals(engine.status()), "upgrade explains one-time pairing");
+            engine.resume(); idle(engine);
+            engine.setWidgetSessionActive(true);
+            List<String> errors = new ArrayList<>();
+            engine.reconnect(errors::add);
+            engine.sendWidgetKey(21, errors::add);
+            engine.togglePictureMode(errors::add);
+            engine.requestPictureState(errors::add);
+            engine.sendPictureMode(true, errors::add);
+            idle(engine);
+            check(errors.size() == 5 && errors.stream().allMatch(RemoteEngine.PAIRING_UPGRADE_MESSAGE::equals),
+                    "all app and widget operations report migration without generic TLS errors");
+            check(TvProtocol.Remote.connections.isEmpty() && TvProtocol.Remote.keys.isEmpty()
+                    && TvProtocol.Remote.pictureRequests.isEmpty() && TvProtocol.Pairing.starts == 0,
+                    "legacy migration never auto-pairs, connects, sends keys or toggles");
+            SharedPreferences prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE);
+            check("AQ==".equals(prefs.getString("certificate", ""))
+                    && prefs.getInt("pairing_identity_version", 0) == 0, "blocking leaves legacy trust unchanged");
+        } finally { shutdown(engine); }
+        RemoteEngine restarted = engine(context);
+        try { check(restarted.needsPairingUpgrade(), "restart cannot bypass incomplete migration"); }
+        finally { shutdown(restarted); }
+    }
+
+    private static void identityUpgradeFailuresAndCancellation() throws Exception {
+        for (int scenario = 0; scenario < 4; scenario++) {
+            Context context = legacyContext();
+            SharedPreferences prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE);
+            RemoteEngine engine = engine(context);
+            try {
+                engine.resume(); idle(engine);
+                TvProtocol.Pairing.failStart = scenario == 0;
+                engine.startPairing("192.0.2.9"); idle(engine);
+                if (scenario == 1) {
+                    engine.cancelPairing(); idle(engine);
+                } else if (scenario == 2 || scenario == 3) {
+                    TvProtocol.Pairing.failFinish = scenario == 2;
+                    prefs.failNextCommit = scenario == 3;
+                    engine.finishPairing("ABC123"); idle(engine);
+                }
+                check(engine.needsPairingUpgrade() && !engine.isPaired(), "failed or cancelled pairing keeps migration pending " + scenario);
+                check("192.0.2.1".equals(prefs.getString("host", ""))
+                        && "AQ==".equals(prefs.getString("certificate", ""))
+                        && prefs.getInt("pairing_identity_version", 0) == 0,
+                        "failed or cancelled pairing preserves old saved trust and version " + scenario);
+                check(TvProtocol.Remote.connections.isEmpty(), "failed migration does not connect " + scenario);
+            } finally { shutdown(engine); }
+            RemoteEngine restarted = engine(context);
+            try { check(restarted.needsPairingUpgrade(), "failed migration remains pending after restart " + scenario); }
+            finally { shutdown(restarted); }
+        }
+
+        Context context = legacyContext();
+        RemoteEngine engine = engine(context);
+        CountDownLatch release = new CountDownLatch(1);
+        try {
+            engine.resume(); idle(engine);
+            engine.startPairing("192.0.2.9"); idle(engine);
+            TvProtocol.Pairing.finishGate = release;
+            TvProtocol.Pairing.finishEntered = new CountDownLatch(1);
+            engine.finishPairing("ABC123");
+            check(TvProtocol.Pairing.finishEntered.await(2, TimeUnit.SECONDS), "pairing finish waits for remote ACK");
+            engine.cancelPairing();
+            release.countDown(); idle(engine);
+            check(engine.needsPairingUpgrade()
+                    && context.getSharedPreferences("remote", Context.MODE_PRIVATE).getInt("pairing_identity_version", 0) == 0,
+                    "late successful ACK after cancellation cannot finish migration");
+        } finally { release.countDown(); shutdown(engine); }
+    }
+
+    private static void identityUpgradeSavedOnlyOnSuccess() throws Exception {
+        Context context = legacyContext();
+        RemoteEngine engine = engine(context);
+        try {
+            engine.resume(); idle(engine);
+            engine.startPairing("192.0.2.9"); idle(engine);
+            check(engine.needsPairingUpgrade(), "requesting a code does not finish migration");
+            engine.finishPairing("ABC123"); idle(engine); idle(engine);
+            SharedPreferences prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE);
+            check(engine.isPaired() && !engine.needsPairingUpgrade(), "successful explicit pairing enables current identity");
+            check("192.0.2.9".equals(prefs.getString("host", ""))
+                    && "Ag==".equals(prefs.getString("certificate", ""))
+                    && prefs.getInt("pairing_identity_version", 0) == PhoneIdentity.VERSION,
+                    "successful pairing saves address pin and identity version together");
+            check(TvProtocol.Pairing.starts == 1 && TvProtocol.Pairing.finishes == 1,
+                    "successful migration pairs exactly once");
+            engine.sendKey(21); idle(engine);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(21)), "newly paired identity sends one key");
+        } finally { shutdown(engine); }
+        RemoteEngine restarted = engine(context);
+        try {
+            check(restarted.isPaired() && !restarted.needsPairingUpgrade(), "completed migration survives restart");
+            restarted.resume(); idle(restarted);
+            check(TvProtocol.Pairing.starts == 0 && TvProtocol.Remote.connections.size() == 1,
+                    "restart reconnects with saved identity without another code");
+            restarted.forget(); Handler.drain();
+            check(!restarted.hasSavedTv() && !restarted.needsPairingUpgrade()
+                    && context.getSharedPreferences("remote", Context.MODE_PRIVATE).getInt("pairing_identity_version", 0) == 0,
+                    "Forget removes saved trust and version without inventing an upgrade");
+        } finally { shutdown(restarted); }
+    }
+
+    private static void freshIdentityPairing() throws Exception {
+        Context context = legacyContext();
+        context.getSharedPreferences("remote", Context.MODE_PRIVATE).edit().remove("host").remove("certificate").apply();
+        RemoteEngine engine = engine(context);
+        try {
+            check(!engine.hasSavedTv() && !engine.needsPairingUpgrade() && !engine.isPaired(),
+                    "fresh install uses normal pairing flow");
+            engine.resume(); idle(engine);
+            check(TvProtocol.Pairing.starts == 0 && TvProtocol.Remote.connections.isEmpty(), "fresh app never auto-pairs");
+            engine.startPairing("192.0.2.9"); idle(engine);
+            engine.finishPairing("ABC123"); idle(engine); idle(engine);
+            check(engine.isPaired() && !engine.needsPairingUpgrade(), "fresh explicit pairing is immediately usable");
+        } finally { shutdown(engine); }
     }
 
     private static ThreadPoolExecutor worker(RemoteEngine engine) throws Exception {

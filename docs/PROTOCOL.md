@@ -21,6 +21,20 @@ Initial pairing allows an untrusted TV certificate because the TV has not been p
 
 Every later connection on port 6466 requires the exact saved TV certificate. The TLS identity adapter must enforce this pin, and the protocol layer verifies it again before processing messages. A changed TV certificate requires deliberate re-pairing.
 
+From 0.4.1, the Android identity uses the stable `bareremote.client.v3` alias and
+a certificate subject containing a newly generated random UUID. This UUID is
+created only when the key is generated; it is not a hardware ID, account ID, or
+phone name. It remains part of the stored certificate across sessions and app
+updates. The TV remote service examined on our CSV4K deduplicates trusted clients
+by certificate subject, so unique keys alone were insufficient when all subjects
+were `CN=BareRemote`. Multiple live connections are otherwise supported.
+
+A legacy saved pairing is retained but cannot send controls until the user pairs
+once with the new identity. The TV address stays prefilled, and successful pairing
+atomically saves the current identity version with the TV certificate pin. Cancel
+or failure must not complete this migration. The old Keystore entry is retained;
+no TV trust entries are deleted by BareRemote. Later launches reuse the v3 key.
+
 On Android, the RSA identity stays in Android Keystore with signing/verification purposes. Its configuration includes `ENCRYPTION_PADDING_NONE` for Conscrypt interoperability: Conscrypt can apply RSA-PSS padding before invoking the Keystore private-key operation. Removing this setting can produce `INCOMPATIBLE_PADDING_MODE` during the client-certificate handshake. This setting does not add encryption/decryption purposes to the identity. See [the Conscrypt maintainers' explanation](https://github.com/google/conscrypt/issues/1201).
 
 The cancellable `Pairing.start` overload checks before starting and between handshake steps, so leaving setup suppresses subsequent pairing requests. An already blocked TLS/read operation remains subject to its timeout; a published pairing object can be closed directly.
@@ -80,3 +94,11 @@ redirections and removes them afterward. This mock path accepts the emulator's
 Ethernet address `10.0.2.15`; disable its simulated Wi-Fi if routing selects
 `10.0.2.16`. It never forwards callbacks to LAN devices and does not log request
 secrets. Production phones use their actual local address without redirection.
+
+The 0.4.1 multi-client suite adds 39 assertions using loopback mutual TLS and an
+independent fake trust-store model that replaces certificates with matching
+subjects. It reproduces the legacy pairing collision, then verifies two unique
+identities can connect, answer their own pings, send commands, and reconnect
+without replacing each other. The engine suite now has 172 assertions, including
+legacy migration gates, explicit pairing, cancellation, failed persistence, and
+restart. Total across the five host suites: 487 assertions.

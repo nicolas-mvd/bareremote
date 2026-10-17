@@ -22,6 +22,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Shared connection while the activity or a bounded widget service session owns it. */
 final class RemoteEngine {
+    static final String PAIRING_UPGRADE_MESSAGE =
+            "Pair once after this update to keep both phones connected.";
     interface Listener {
         void onState(String text, boolean paired);
         void onPairingCodeNeeded();
@@ -57,6 +59,7 @@ final class RemoteEngine {
     private volatile boolean pairingBusy;
     private volatile String host;
     private volatile byte[] pin;
+    private volatile int pairedIdentityVersion;
     private volatile String status;
     private volatile String pendingHost;
     private volatile TvProtocol.Pairing pairing;
@@ -69,7 +72,8 @@ final class RemoteEngine {
         host = preferences.getString("host", "");
         try { pin = Base64.decode(preferences.getString("certificate", ""), Base64.NO_WRAP); }
         catch (IllegalArgumentException invalid) { pin = null; }
-        status = isPaired() ? "Ready" : "Pair your TV in Setup";
+        pairedIdentityVersion = preferences.getInt("pairing_identity_version", 0);
+        status = readyStatus();
         worker.allowCoreThreadTimeOut(true);
         pictureWorker.allowCoreThreadTimeOut(true);
         String cached = preferences.getString("picture_state", "unknown");
@@ -77,7 +81,15 @@ final class RemoteEngine {
             confirmedPicture = cached;
     }
 
-    boolean isPaired() { return !host.isEmpty() && pin != null && pin.length > 0; }
+    boolean hasSavedTv() { return !host.isEmpty() && pin != null && pin.length > 0; }
+    boolean needsPairingUpgrade() { return hasSavedTv() && pairedIdentityVersion != PhoneIdentity.VERSION; }
+    boolean isPaired() { return hasSavedTv() && !needsPairingUpgrade(); }
+    String pairingRequiredMessage() {
+        return needsPairingUpgrade() ? PAIRING_UPGRADE_MESSAGE : "Pair your TV in Setup first.";
+    }
+    private String readyStatus() {
+        return needsPairingUpgrade() ? PAIRING_UPGRADE_MESSAGE : isPaired() ? "Ready" : "Pair your TV in Setup";
+    }
     String host() { return host; }
     String status() { return status; }
     String pictureState() { return confirmedPicture; }
@@ -88,7 +100,7 @@ final class RemoteEngine {
     void reconnect() { reconnect(null); }
 
     void reconnect(Completion completion) {
-        if (!isPaired()) { finish(completion, "Pair your TV in Setup first."); return; }
+        if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
         if (pairingBusy) { finish(completion, "Finish pairing first."); return; }
         final int token;
         synchronized (connectionLock) {
@@ -130,7 +142,7 @@ final class RemoteEngine {
             if (pairing != null) notifyCode();
             return;
         }
-        if (!isPaired()) { state("Pair your TV in Setup"); return; }
+        if (!isPaired()) { state(readyStatus()); return; }
         int token = generation.get();
         execute(() -> {
             if (!current(token) || !foreground || pairingBusy) return;
@@ -156,7 +168,7 @@ final class RemoteEngine {
             if (!connectionWanted()) closeRemote();
         }
         if (pairingBusy) cancelPairing();
-        else state(isPaired() ? "Ready" : "Pair your TV in Setup");
+        else state(readyStatus());
     }
 
     void startPairing(String address) {
@@ -212,8 +224,7 @@ final class RemoteEngine {
                     // UI mutations and this final commit run serially, so Forget/Cancel
                     // cannot race a stale pairing into becoming the saved TV.
                     if (!current(token) || !foreground) return;
-                    boolean saved = preferences.edit().putString("host", address)
-                            .putString("certificate", Base64.encodeToString(certificate, Base64.NO_WRAP)).commit();
+                    boolean saved = savePairing(address, certificate);
                     if (!saved) {
                         cancelPairing();
                         error("Could not save pairing. Request a new code to retry.");
@@ -221,6 +232,7 @@ final class RemoteEngine {
                     }
                     host = address;
                     pin = certificate;
+                    pairedIdentityVersion = PhoneIdentity.VERSION;
                     publishPictureState("unknown");
                     pairingBusy = false;
                     pairing = null;
@@ -246,6 +258,20 @@ final class RemoteEngine {
         }, null);
     }
 
+    private boolean savePairing(String address, byte[] certificate) {
+        String oldHost = preferences.getString("host", "");
+        String oldCertificate = preferences.getString("certificate", "");
+        int oldIdentityVersion = preferences.getInt("pairing_identity_version", 0);
+        if (preferences.edit().putString("host", address)
+                .putString("certificate", Base64.encodeToString(certificate, Base64.NO_WRAP))
+                .putInt("pairing_identity_version", PhoneIdentity.VERSION).commit()) return true;
+        // A failed disk commit can still replace SharedPreferences' in-memory map.
+        // Restore the old trust and migration marker before another Activity reads it.
+        preferences.edit().putString("host", oldHost).putString("certificate", oldCertificate)
+                .putInt("pairing_identity_version", oldIdentityVersion).commit();
+        return false;
+    }
+
     void cancelPairing() {
         generation.incrementAndGet();
         synchronized (connectionLock) { cancelInactivePictureRequests(); }
@@ -255,7 +281,7 @@ final class RemoteEngine {
         pairingBusy = false;
         if (old != null) old.close();
         removePairingExpiry();
-        state(isPaired() ? "Ready" : "Pair your TV in Setup");
+        state(readyStatus());
     }
 
     private void removePairingExpiry() {
@@ -265,9 +291,10 @@ final class RemoteEngine {
     void forget() {
         cancelPairing();
         closeRemote();
-        preferences.edit().remove("host").remove("certificate").apply();
+        preferences.edit().remove("host").remove("certificate").remove("pairing_identity_version").apply();
         host = "";
         pin = null;
+        pairedIdentityVersion = 0;
         publishPictureState("unknown");
         state("Pair your TV in Setup");
     }
@@ -286,7 +313,7 @@ final class RemoteEngine {
 
     private void pictureRequest(boolean toggle, Completion completion, boolean widgetOwner, boolean quiet) {
         if (!isPaired() || pairingBusy) {
-            if (!quiet) finish(completion, !isPaired() ? "Pair your TV in Setup first." : "Finish pairing first.");
+            if (!quiet) finish(completion, !isPaired() ? pairingRequiredMessage() : "Finish pairing first.");
             return;
         }
         final PictureOperation request;
@@ -419,7 +446,7 @@ final class RemoteEngine {
 
     private void command(int key, boolean longPress, Boolean pictureNight, Completion completion) {
         if (pictureNight == null && !allowedKey(key)) { finish(completion, "Unknown control"); return; }
-        if (!isPaired()) { finish(completion, "Open BareRemote and pair your TV"); return; }
+        if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
         if (pairingBusy) { finish(completion, "Finish pairing in the app first"); return; }
         final Operation operation = new Operation(generation.get(), completion);
         startTimeout(operation);
@@ -533,6 +560,7 @@ final class RemoteEngine {
         final byte[] certificate;
         synchronized (connectionLock) {
             if (!current(token) || !connectionWanted() || pairingBusy) throw new IOException("Control cancelled");
+            if (!isPaired()) throw new IOException(pairingRequiredMessage());
             TvProtocol.Remote existing = remote;
             if (existing != null && existing.isOpen()) return existing;
             closeRemote();

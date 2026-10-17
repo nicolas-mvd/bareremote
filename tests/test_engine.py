@@ -23,15 +23,21 @@ public class Context {
     "android/content/SharedPreferences.java": """
 package android.content;
 public class SharedPreferences {
-    private final java.util.Map<String,String> values = new java.util.HashMap<>();
-    public SharedPreferences() { values.put("host", "192.0.2.1"); values.put("certificate", "AQ=="); }
-    public String getString(String key, String fallback) { return values.getOrDefault(key, fallback); }
+    private final java.util.Map<String,Object> values = new java.util.HashMap<>();
+    public boolean failNextCommit;
+    public SharedPreferences() { values.put("host", "192.0.2.1"); values.put("certificate", "AQ=="); values.put("pairing_identity_version", 3); }
+    public String getString(String key, String fallback) { return (String) values.getOrDefault(key, fallback); }
+    public int getInt(String key, int fallback) { return (Integer) values.getOrDefault(key, fallback); }
     public Editor edit() { return new Editor(); }
     public class Editor {
-        public Editor putString(String key, String value) { values.put(key, value); return this; }
-        public Editor remove(String key) { values.remove(key); return this; }
-        public boolean commit() { return true; }
-        public void apply() {}
+        private final java.util.Map<String,Object> changes = new java.util.HashMap<>();
+        public Editor putString(String key, String value) { changes.put(key, value); return this; }
+        public Editor putInt(String key, int value) { changes.put(key, value); return this; }
+        public Editor remove(String key) { changes.put(key, null); return this; }
+        public boolean commit() { apply(); if (failNextCommit) { failNextCommit=false; return false; } return true; }
+        public void apply() { for (java.util.Map.Entry<String,Object> entry : changes.entrySet()) {
+            if (entry.getValue()==null) values.remove(entry.getKey()); else values.put(entry.getKey(),entry.getValue());
+        } }
     }
 }
 """,
@@ -92,7 +98,7 @@ public class KeyEvent {
 }
 """,
     "uy/nico/bareremote/PhoneIdentity.java": """
-package uy.nico.bareremote; final class PhoneIdentity {}
+package uy.nico.bareremote; final class PhoneIdentity { static final int VERSION=3; }
 """,
     "uy/nico/bareremote/RemoteWidget.java": """
 package uy.nico.bareremote;
@@ -124,9 +130,21 @@ import java.util.concurrent.*;
 final class TvProtocol {
     static final int DELIVERY_WINDOW_MS=750;
     static final class Pairing {
-        static Pairing start(String host,int port,String name,PhoneIdentity identity,java.util.function.BooleanSupplier cancelled) { return new Pairing(); }
-        byte[] finish(String code) { return new byte[]{1}; }
+        static int starts, finishes;
+        static boolean failStart, failFinish;
+        static volatile CountDownLatch finishGate, finishEntered;
+        static Pairing start(String host,int port,String name,PhoneIdentity identity,java.util.function.BooleanSupplier cancelled) throws Exception {
+            starts++; if (failStart) throw new java.io.IOException("Pairing rejected"); return new Pairing();
+        }
+        byte[] finish(String code) throws Exception {
+            finishes++;
+            CountDownLatch gate=finishGate;
+            if (gate!=null) { finishEntered.countDown(); gate.await(); }
+            if (failFinish) throw new java.io.IOException("Pairing code rejected");
+            return new byte[]{2};
+        }
         void close() {}
+        static void reset() { starts=0; finishes=0; failStart=false; failFinish=false; finishGate=null; finishEntered=null; }
     }
     static final class Remote {
         static final java.util.List<Remote> connections = new CopyOnWriteArrayList<>();

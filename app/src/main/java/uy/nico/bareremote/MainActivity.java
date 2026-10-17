@@ -134,7 +134,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         content.setHeader(header);
 
         LinearLayout status = column();
-        stateText = text(engine.isPaired() ? "Connecting…" : "Pair a TV in Setup", 12, MUTED);
+        stateText = text(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
+                : engine.isPaired() ? "Connecting…" : "Pair a TV in Setup", 12, MUTED);
         stateText.setGravity(Gravity.CENTER);
         stateText.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
         stateText.setPadding(0, dp(10), 0, 0);
@@ -261,6 +262,12 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         pendingCode = false;
         dismissCode();
         LinearLayout body = dialogBody();
+        if (engine.needsPairingUpgrade()) {
+            TextView upgrade = text(RemoteEngine.PAIRING_UPGRADE_MESSAGE
+                    + " Your TV address is saved. Tap Pair and enter the new TV code on each updated phone.", 15, WHITE);
+            upgrade.setPadding(0, 0, 0, dp(12));
+            body.addView(upgrade);
+        }
         if (pairingInterrupted) {
             TextView interrupted = text("Pairing stopped when the app left the screen. Tap Pair to request a new code.", 14, WHITE);
             interrupted.setPadding(0, 0, 0, dp(12));
@@ -336,7 +343,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             hostInput = null;
         });
         setupDialog.setOnShowListener(dialog -> {
-            setupDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(engine.isPaired());
+            setupDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(engine.hasSavedTv());
             setupDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
                 String host = hostInput.getText().toString().trim();
                 if (host.isEmpty()) {
@@ -412,7 +419,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         if (codeInput != null) codeInput.setText("");
         engine.cancelPairing();
         refreshSync();
-        stateText.setText(engine.isPaired() ? "TV saved" : "Pair a TV to begin");
+        stateText.setText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
+                : engine.isPaired() ? "TV saved" : "Pair a TV to begin");
     }
 
     private void addWidget() {
@@ -525,7 +533,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     @Override public void onError(String message) {
         pairingInProgress = false;
         refreshSync();
-        stateText.setText(engine.isPaired() ? "TV saved" : "Pair your TV in Setup");
+        stateText.setText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
+                : engine.isPaired() ? "TV saved" : "Pair your TV in Setup");
         errorText.setText("Error: " + message);
         errorText.setVisibility(View.VISIBLE);
         if (codeInput != null) {
@@ -551,8 +560,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     private void refreshTarget() {
         String host = safeHost();
-        syncButton.setTooltipText(engine.isPaired() && !host.isEmpty()
-                ? "Sync: reconnect to " + host : "Pair a TV in Setup");
+        syncButton.setTooltipText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
+                : engine.isPaired() && !host.isEmpty() ? "Sync: reconnect to " + host : "Pair a TV in Setup");
     }
 
     private String safeHost() { return engine.host() == null ? "" : engine.host(); }
