@@ -112,3 +112,10 @@ controls have at least 48dp targets, with no visible text row. The installed
 padding update was rechecked for confirmed toggling and a normal key. The widget
 connection stopped after 60 seconds idle, and the next tap reconnected once.
 The published APK matches the installed, tested APK byte-for-byte.
+
+Version **0.4.0** adds the manual update option in Setup. All four host suites
+pass, including 80 updater assertions (384 total assertions across the suites).
+A lower-version fixture using the production updater downloaded the published
+0.4 APK from GitHub and completed Android's installer on the Android 15 emulator.
+The installed release reported up to date and its update screen fit a 320dp-wide
+phone layout. The phone updater has not yet been tested on a physical Samsung.
