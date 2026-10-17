@@ -146,3 +146,14 @@ persistent identity after pairing. Both sent controls on simultaneous connection
 Sync and a process restart reused the first identity while the second stayed
 connected. This is emulator evidence against a local simulated TV; physical-phone
 confirmation of 0.4.1 is pending.
+
+The published **0.4.1** APK was also tested with **two separate Android 15
+emulators simultaneously controlling the physical CSV4K /
+KTC_MOTOROLA_4K_SA_21V2 TV (Android 11, Android TV Remote Service
+7.00.999235495)** on 2026-10-17. Both stayed connected and independently moved
+the launcher selection. Syncing the first remote preserved the second connection;
+restarting the second app preserved the first. Both controlled the TV afterward
+without another pairing code. The TV's per-client input counters and ping replies
+confirmed the separate live connections. No apps were launched or picture levels
+changed, and the test sessions were closed afterward. This tests the actual TV
+with emulator clients; confirmation on two physical phones is still pending.
