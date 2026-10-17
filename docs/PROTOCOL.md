@@ -1,0 +1,40 @@
+# Protocol implementation notes
+
+BareRemote implements the small subset of Android TV Remote v2 needed for D-pad, navigation, volume, power and playback keys. It has no protobuf or third-party networking runtime. `Proto.java` is an independently written bounded encoder/parser; `TvProtocol.java` implements the messages against the references below.
+
+## Primary references
+
+- [tronikos/androidtvremote2 pairing implementation](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/pairing.py)
+- [Remote v2 implementation](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remote.py)
+- [Pairing wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/polo.proto)
+- [Remote wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remotemessage.proto)
+- [Google's original pairing implementation](https://android.googlesource.com/platform/external/google-tv-pairing-protocol/+/master/java/src/com/google/polo/pairing/PairingSession.java)
+- [Google's original challenge calculation](https://android.googlesource.com/platform/external/google-tv-pairing-protocol/+/master/java/src/com/google/polo/pairing/PoloChallengeResponse.java)
+
+These were consulted as interoperability references on 2026-10-17. Their source and generated protobuf code are not bundled. The original Google pairing project and androidtvremote2 use Apache-2.0; the schema also credits louis49/androidtv-remote. Protocol field numbers and enum values are implemented directly in BareRemote's own code.
+
+## Pairing and trust
+
+Pairing uses mutual TLS on port 6467, followed by version-2 request, hexadecimal-code options, configuration and secret messages. The six-character TV code contains a check byte and two nonce bytes. The SHA-256 input is the unsigned big-endian RSA modulus and exponent from the phone certificate, then those from the TV certificate, then the two nonce bytes. The first digest byte must match the code's check byte before a secret is sent.
+
+Initial pairing allows an untrusted TV certificate because the TV has not been paired yet. The certificate is returned for storage only after an OK secret acknowledgment. A nonempty echoed secret must match. Missing or empty echoes are allowed: Google's original implementation documents servers that do not echo the secret. Codes, hashes and private keys are never logged by the protocol layer.
+
+Every later connection on port 6466 requires the exact saved TV certificate. The TLS identity adapter must enforce this pin, and the protocol layer verifies it again before processing messages. A changed TV certificate requires deliberate re-pairing.
+
+On Android, the RSA identity stays in Android Keystore with signing/verification purposes. Its configuration includes `ENCRYPTION_PADDING_NONE` for Conscrypt interoperability: Conscrypt can apply RSA-PSS padding before invoking the Keystore private-key operation. Removing this setting can produce `INCOMPATIBLE_PADDING_MODE` during the client-certificate handshake. This setting does not add encryption/decryption purposes to the identity. See [the Conscrypt maintainers' explanation](https://github.com/google/conscrypt/issues/1201).
+
+The cancellable `Pairing.start` overload checks before starting and between handshake steps, so leaving setup suppresses subsequent pairing requests. An already blocked TLS/read operation remains subject to its timeout; a published pairing object can be closed directly.
+
+Session `close()` is safe for an Android lifecycle callback. It closes the underlying TCP socket immediately with socket linger disabled, then queues TLS wrapper cleanup on a bounded daemon worker that expires after one idle second. This matters because Conscrypt's TLS `close()` can write a shutdown notification and throw `NetworkOnMainThreadException` when invoked directly from `onPause`. Aborting the transport also releases any blocked reader. The cleanup worker is capped at one thread and 32 queued wrappers; the TCP transport is already closed even if native TLS cleanup stalls.
+
+## Small scope and limits
+
+Only ping, key, power and volume features are negotiated. Keyboard/IME, voice and app-link features are not requested. The remote becomes ready only after configuration and a start message; standby still permits a wake key. A single reader answers server pings while a session is open. The caller closes sessions when no longer needed; the protocol does not reconnect or start Android background services.
+
+Frames are varint length-delimited, limited to 64 KiB and 4096 fields. The parser rejects truncation, integer overflow, invalid tags and deprecated group wire types. Unknown ordinary fields can be skipped. A remote connection has a shared five-second network deadline; incomplete frames also have a deadline. Connections require a numeric IP address so DNS cannot exceed that budget. An idle remote read expires after sixteen seconds. Long keys send start, wait 650 ms, and send end even when the calling worker is interrupted. A command is not retried by this layer.
+
+Run `python3 -m unittest discover -s tests -p 'test_protocol.py'`. The tests cover independent wire/hash vectors, malformed and fragmented frames, actual loopback mutual TLS pairing, server pinning, ping responses, standby readiness, bounded long presses and the connect deadline. Loopback tests do not establish compatibility with a physical TV.
+
+`tests/ProtocolCli.java` is an optional manual hardware harness. Compile it with the two protocol classes using a Java 8+ JDK. Supply a test-only RSA PKCS12 client identity and its password through `BAREREMOTE_STORE_PASSWORD`. The `pair TV_IP client.p12 tv-pin.der` command waits for the TV code on standard input; `check` verifies readiness without sending a key. Only explicit `key ... KEYCODE` or `long ... KEYCODE` commands send input. Keep the identity and saved pin outside the source tree and do not distribute a paired identity with an APK.
+
+For emulator integration, run `python3 tests/run_fake_tv.py` and enter `10.0.2.2` in the app. The fake server listens only on host loopback ports 6467/6466, prints a test pairing code, requires a real mutual-TLS client certificate, and records received keys. Its temporary certificate and in-memory pairing list disappear when it stops, so each restart requires pairing again. It never contacts a physical TV. This exercises the installed Android app, its Keystore identity, and widget command path without interrupting TV viewing; it does not establish physical-TV compatibility.

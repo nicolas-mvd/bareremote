@@ -1,0 +1,396 @@
+package uy.nico.bareremote;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigInteger;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.security.KeyStore;
+import java.security.MessageDigest;
+import java.security.cert.X509Certificate;
+import java.security.interfaces.RSAPublicKey;
+import java.util.Arrays;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import javax.net.ssl.KeyManagerFactory;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLServerSocket;
+import javax.net.ssl.SSLSocket;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.X509TrustManager;
+
+/** Independent wire vectors and real loopback mutual-TLS protocol tests. */
+public final class ProtocolTest {
+    private static int assertions;
+    private static final char[] PASSWORD = "test-only".toCharArray();
+
+    interface Action { void run() throws Exception; }
+
+    public static void main(String[] args) throws Exception {
+        testProto();
+        testSecret();
+        SSLContext context = context(args[0]);
+        final TvProtocol.Identity identity = new TvProtocol.Identity() {
+            @Override public SSLContext context(byte[] pin) { return context; }
+        };
+        byte[] pin = certificate(args[0]);
+        testPairing(context, identity, pin);
+        testPairingCancellation(context, identity);
+        testRemote(context, identity, pin);
+        testImmediateClose(context, identity, pin);
+        testPinAndTimeout(context, identity, pin);
+        System.out.println("Protocol: " + assertions + " assertions passed");
+    }
+
+    private static void testProto() throws Exception {
+        long[] values = {0, 1, 127, 128, 255, 16384, Integer.MAX_VALUE,
+                0xffffffffL, Long.MAX_VALUE, Long.MIN_VALUE, -1};
+        for (long value : values) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            Proto.varint(out, value);
+            check(Proto.readVarint(new ByteArrayInputStream(out.toByteArray())) == value, "varint roundtrip");
+        }
+        equal(new Proto.Writer().message(10, new Proto.Writer().number(1, 23).number(2, 3)).build(),
+                hex("520408171003"), "short OK wire vector");
+        equal(new Proto.Writer().number(1, 2).number(2, 200)
+                .message(30, new Proto.Writer().message(1, new Proto.Writer().number(1, 3).number(2, 6))
+                        .number(2, 1)).build(),
+                hex("080210c801f201080a04080310061001"), "pairing configuration wire vector");
+        Proto.Message nested = Proto.parse(hex("f50501020304f9050102030405060708a206021807520408171003"));
+        check(nested.message(10).integer(1, -1) == 23, "unknown fixed and nested fields skipped");
+        check(nested.message(100).integer(3, -1) == 7, "high numbered nested field parsed");
+        check(Proto.parse(hex("08010802")).integer(1, -1) == 2, "last duplicate value wins");
+        check(Proto.parse(hex("0800")).integer(2, 9) == 9, "missing default");
+        ByteArrayOutputStream frames = new ByteArrayOutputStream();
+        byte[] large = new byte[300];
+        Arrays.fill(large, (byte) 42);
+        Proto.writeFrame(frames, large);
+        Proto.writeFrame(frames, hex("0801"));
+        final byte[] stream = frames.toByteArray();
+        InputStream fragmented = new ByteArrayInputStream(stream) {
+            @Override public int read(byte[] b, int offset, int count) {
+                return super.read(b, offset, Math.min(count, 1));
+            }
+        };
+        equal(Proto.readFrame(fragmented), large, "fragmented multi-byte length frame");
+        equal(Proto.readFrame(fragmented), hex("0801"), "coalesced next frame");
+        for (final String malformed : new String[] {"00", "0f", "0b", "0800ff", "08ff", "0a05aa", "0901", "0d01",
+                "088080808080808080808002", "ffffffff1f00"}) {
+            fails(new Action() { public void run() throws Exception { Proto.parse(hex(malformed)); } },
+                    "malformed message rejected");
+        }
+        fails(new Action() { public void run() throws Exception { Proto.parse(hex("0a00")).integer(1, 0); } },
+                "wrong known wire type rejected");
+        for (final String malformed : new String[] {"00", "80", "808004", "0401", "ffffffffffffffffffff01"}) {
+            fails(new Action() { public void run() throws Exception { Proto.readFrame(new ByteArrayInputStream(hex(malformed))); } },
+                    "malformed frame rejected");
+        }
+        fails(new Action() { public void run() { new Proto.Writer().number(0, 1); } }, "zero tag rejected");
+        fails(new Action() { public void run() { new Proto.Writer().bytes(1, new byte[Proto.MAX_FRAME + 1]); } },
+                "oversize outbound rejected");
+        ByteArrayOutputStream excessive = new ByteArrayOutputStream();
+        for (int n = 0; n < 4097; n++) excessive.write(hex("0801"));
+        final byte[] excessiveFields = excessive.toByteArray();
+        fails(new Action() { public void run() throws Exception { Proto.parse(excessiveFields); } },
+                "field count bounded");
+    }
+
+    private static void testSecret() throws Exception {
+        final RSAPublicKey client = rsa("80ff", "010001");
+        final RSAPublicKey server = rsa("deadbeef", "03");
+        equal(TvProtocol.unsigned(new BigInteger("80ff", 16)), hex("80ff"), "unsigned modulus strips sign byte");
+        equal(TvProtocol.unsigned(new BigInteger("010001", 16)), hex("010001"), "unsigned exponent retained");
+        byte[] expected = hex("54794e89b7f113d8b4f45c7a648ec446bb96af58d13fe390c3e55cc5e4059121");
+        equal(TvProtocol.pairingSecret(client, server, "54ab12"), expected, "independent SHA256 pairing vector");
+        equal(TvProtocol.pairingSecret(client, server, "54AB12"), expected, "uppercase code");
+        for (final String code : new String[] {null, "", "12345", "1234567", "12 456", "zz1234", "55ab12"}) {
+            fails(new Action() { public void run() throws Exception { TvProtocol.pairingSecret(client, server, code); } },
+                    "invalid code rejected locally");
+        }
+    }
+
+    private static void testPairing(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        for (final boolean echo : new boolean[] {true, false}) {
+            final String[] code = new String[1];
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    Proto.Message request = read(socket);
+                    check(request.integer(1, -1) == 2 && request.integer(2, -1) == 200, "pairing outer version and status");
+                    equal(request.message(10).bytes(1), "atvremote".getBytes("UTF-8"), "pairing service");
+                    pairingReply(socket, 11, new Proto.Writer());
+                    Proto.Message options = read(socket).message(20);
+                    check(options.integer(3, -1) == 1 && options.message(1).integer(1, -1) == 3
+                            && options.message(1).integer(2, -1) == 6, "hex input negotiation");
+                    pairingReply(socket, 20, new Proto.Writer().message(2, new Proto.Writer().number(1, 3).number(2, 6)));
+                    Proto.Message configuration = read(socket).message(30);
+                    check(configuration.integer(2, -1) == 1 && configuration.message(1).integer(2, -1) == 6,
+                            "pairing configuration");
+                    RSAPublicKey client = (RSAPublicKey) socket.getSession().getPeerCertificates()[0].getPublicKey();
+                    RSAPublicKey tv = (RSAPublicKey) socket.getSession().getLocalCertificates()[0].getPublicKey();
+                    MessageDigest digest = MessageDigest.getInstance("SHA-256");
+                    for (BigInteger value : new BigInteger[] {client.getModulus(), client.getPublicExponent(),
+                            tv.getModulus(), tv.getPublicExponent()}) digest.update(TvProtocol.unsigned(value));
+                    digest.update(hex("1234"));
+                    byte[] secret = digest.digest();
+                    code[0] = String.format("%02x1234", secret[0] & 255);
+                    pairingReply(socket, 31, new Proto.Writer());
+                    equal(read(socket).message(40).bytes(1), secret, "secret bound to both TLS certificates");
+                    pairingReply(socket, 41, echo ? new Proto.Writer().bytes(1, secret) : new Proto.Writer());
+                }
+            });
+            TvProtocol.Pairing pairing = TvProtocol.Pairing.start("127.0.0.1", server.port(), "Test phone", identity);
+            fails(new Action() { public void run() throws Exception { pairing.finish("bad"); } }, "bad code leaves pairing available");
+            equal(pairing.finish(code[0]), pin, "pin returned after ACK");
+            fails(new Action() { public void run() throws Exception { pairing.finish(code[0]); } }, "pairing cannot finish twice");
+            server.finish();
+        }
+        Server bad = new Server(context, new Session() {
+            @Override public void run(SSLSocket socket) throws Exception {
+                read(socket);
+                write(socket, new Proto.Writer().number(1, 2).number(2, 402).message(11, new Proto.Writer()));
+            }
+        });
+        fails(new Action() { public void run() throws Exception {
+            TvProtocol.Pairing.start("127.0.0.1", bad.port(), "Test", identity);
+        } }, "pairing server failure rejected");
+        bad.finish();
+    }
+
+    private static void testRemote(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        final CountDownLatch keysReceived = new CountDownLatch(1);
+        Server server = new Server(context, new Session() {
+            @Override public void run(SSLSocket socket) throws Exception {
+                write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 1023)));
+                check(read(socket).message(1).integer(1, 0) == 99, "minimal features negotiated");
+                write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 1023)));
+                check(read(socket).message(2).integer(1, 0) == 99, "set active response");
+                write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 0)));
+                check(read(socket).message(10).integer(2, 0) == 3, "short key sent after standby readiness");
+                write(socket, new Proto.Writer().message(8, new Proto.Writer().number(1, -1)));
+                boolean sawPing = false;
+                boolean sawStart = false;
+                boolean sawEnd = false;
+                long start = 0;
+                while (!sawPing || !sawEnd) {
+                    Proto.Message msg = read(socket);
+                    if (msg.has(9)) {
+                        check(msg.message(9).integer(1, 0) == -1, "reader answers ping including signed value");
+                        sawPing = true;
+                    } else {
+                        Proto.Message key = msg.message(10);
+                        check(key.integer(1, 0) == 23, "long key code");
+                        if (!sawStart) {
+                            check(key.integer(2, 0) == 1, "long press starts");
+                            start = System.nanoTime();
+                            sawStart = true;
+                        } else {
+                            check(key.integer(2, 0) == 2, "long press releases");
+                            check((System.nanoTime() - start) / 1000000L < 1500, "long press bounded");
+                            sawEnd = true;
+                        }
+                    }
+                }
+                keysReceived.countDown();
+            }
+        });
+        TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+        check(remote.isOpen(), "remote open after handshake");
+        remote.sendKey(3);
+        remote.sendLongKey(23);
+        check(keysReceived.await(3, TimeUnit.SECONDS), "keys received");
+        server.finish();
+        long until = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
+        while (remote.isOpen() && System.nanoTime() < until) Thread.sleep(10);
+        check(!remote.isOpen(), "remote notices disconnect");
+        fails(new Action() { public void run() throws Exception { remote.sendKey(3); } }, "closed remote rejects command");
+        remote.close();
+    }
+
+    private static void testPairingCancellation(SSLContext context, TvProtocol.Identity identity) throws Exception {
+        fails(new Action() { public void run() throws Exception {
+            TvProtocol.Pairing.start("127.0.0.1", 1, "Test", identity, () -> true);
+        } }, "pre-cancelled pairing does not connect");
+        for (int stage = 0; stage < 3; stage++) {
+            final int cancelAfter = stage;
+            final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    read(socket).message(10);
+                    if (cancelAfter == 0) cancelled.set(true);
+                    pairingReply(socket, 11, new Proto.Writer());
+                    if (cancelAfter > 0) {
+                        read(socket).message(20);
+                        if (cancelAfter == 1) cancelled.set(true);
+                        pairingReply(socket, 20, new Proto.Writer());
+                    }
+                    if (cancelAfter > 1) {
+                        read(socket).message(30);
+                        cancelled.set(true);
+                        pairingReply(socket, 31, new Proto.Writer());
+                    }
+                    check(socket.getInputStream().read() == -1, "cancelled pairing sends no later request and closes");
+                }
+            });
+            fails(new Action() { public void run() throws Exception {
+                TvProtocol.Pairing.start("127.0.0.1", server.port(), "Test", identity, cancelled::get);
+            } }, "pairing cancellation checked between stages");
+            server.finish();
+        }
+    }
+
+    private static void testPinAndTimeout(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        fails(new Action() { public void run() throws Exception { TvProtocol.Remote.connect("127.0.0.1", 1, null, identity); } },
+                "remote requires paired pin");
+        for (final String badAddress : new String[] {"example.com", "999.1.2.3", "127.1", "127.0.0.1:6466"}) {
+            fails(new Action() { public void run() throws Exception {
+                TvProtocol.Remote.connect(badAddress, 6466, pin, identity);
+            } }, "invalid or DNS address rejected");
+        }
+        Server badPin = new Server(context, new Session() {
+            @Override public void run(SSLSocket socket) throws Exception { socket.getInputStream().read(); }
+        });
+        fails(new Action() { public void run() throws Exception {
+            TvProtocol.Remote.connect("127.0.0.1", badPin.port(), new byte[] {1, 2}, identity);
+        } }, "protocol enforces pin even with permissive identity");
+        badPin.finish();
+        Server stalled = new Server(context, new Session() {
+            @Override public void run(SSLSocket socket) throws Exception { socket.getInputStream().read(); }
+        });
+        long start = System.nanoTime();
+        fails(new Action() { public void run() throws Exception {
+            TvProtocol.Remote.connect("127.0.0.1", stalled.port(), pin, identity);
+        } }, "stalled handshake times out");
+        long elapsed = (System.nanoTime() - start) / 1000000L;
+        check(elapsed >= 4500 && elapsed < 6500, "whole remote connect has five-second budget");
+        stalled.finish();
+    }
+
+    private static void testImmediateClose(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        Server server = new Server(context, new Session() {
+            @Override public void run(SSLSocket socket) throws Exception {
+                write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 99)));
+                read(socket).message(1);
+                write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 99)));
+                read(socket).message(2);
+                write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
+                check(socket.getInputStream().read() == -1, "close aborts live idle transport immediately");
+            }
+        });
+        TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+        long start = System.nanoTime();
+        remote.close();
+        remote.close();
+        check((System.nanoTime() - start) / 1000000L < 500, "close does not wait for TLS cleanup or peer");
+        check(!remote.isOpen(), "closed state is immediate before async TLS cleanup");
+        server.finish();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+        boolean cleanupAlive;
+        do {
+            cleanupAlive = false;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (thread.isAlive() && thread.getName().equals("BareRemote-TLS-cleanup")) cleanupAlive = true;
+            }
+            if (cleanupAlive) Thread.sleep(20);
+        } while (cleanupAlive && System.nanoTime() < deadline);
+        check(!cleanupAlive, "TLS cleanup does not retain a permanent idle thread");
+    }
+
+    private interface Session { void run(SSLSocket socket) throws Exception; }
+
+    private static final class Server {
+        private final SSLServerSocket server;
+        private final Thread thread;
+        private volatile Throwable failure;
+
+        Server(SSLContext context, final Session action) throws Exception {
+            server = (SSLServerSocket) context.getServerSocketFactory().createServerSocket(0, 1,
+                    java.net.InetAddress.getByName("127.0.0.1"));
+            server.setEnabledProtocols(new String[] {"TLSv1.2"});
+            server.setNeedClientAuth(true);
+            server.setSoTimeout(8000);
+            thread = new Thread(new Runnable() {
+                @Override public void run() {
+                    try (SSLSocket socket = (SSLSocket) server.accept()) {
+                        socket.setSoTimeout(8000);
+                        socket.startHandshake();
+                        action.run(socket);
+                    } catch (Throwable problem) { failure = problem; }
+                }
+            }, "FakeTV");
+            thread.start();
+        }
+
+        int port() { return server.getLocalPort(); }
+
+        void finish() throws Exception {
+            thread.join(9000);
+            server.close();
+            if (failure != null) throw new AssertionError("Fake TV failed", failure);
+            check(!thread.isAlive(), "fake TV finishes");
+        }
+    }
+
+    private static void pairingReply(SSLSocket socket, int field, Proto.Writer body) throws Exception {
+        write(socket, new Proto.Writer().number(1, 2).number(2, 200).message(field, body));
+    }
+
+    private static Proto.Message read(SSLSocket socket) throws Exception {
+        return Proto.parse(Proto.readFrame(socket.getInputStream()));
+    }
+
+    private static void write(SSLSocket socket, Proto.Writer writer) throws Exception {
+        Proto.writeFrame(socket.getOutputStream(), writer.build());
+    }
+
+    private static SSLContext context(String path) throws Exception {
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(Paths.get(path))) { store.load(in, PASSWORD); }
+        KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+        keys.init(store, PASSWORD);
+        SSLContext context = SSLContext.getInstance("TLS");
+        context.init(keys.getKeyManagers(), new TrustManager[] {new X509TrustManager() {
+            public X509Certificate[] getAcceptedIssuers() { return new X509Certificate[0]; }
+            public void checkClientTrusted(X509Certificate[] certs, String type) { }
+            public void checkServerTrusted(X509Certificate[] certs, String type) { }
+        }}, null);
+        return context;
+    }
+
+    private static byte[] certificate(String path) throws Exception {
+        KeyStore store = KeyStore.getInstance("PKCS12");
+        try (InputStream in = Files.newInputStream(Paths.get(path))) { store.load(in, PASSWORD); }
+        return store.getCertificate("test").getEncoded();
+    }
+
+    private static RSAPublicKey rsa(final String modulus, final String exponent) {
+        return new RSAPublicKey() {
+            public BigInteger getModulus() { return new BigInteger(modulus, 16); }
+            public BigInteger getPublicExponent() { return new BigInteger(exponent, 16); }
+            public String getAlgorithm() { return "RSA"; }
+            public String getFormat() { return null; }
+            public byte[] getEncoded() { return null; }
+        };
+    }
+
+    private static byte[] hex(String text) {
+        byte[] result = new byte[text.length() / 2];
+        for (int i = 0; i < result.length; i++) result[i] = (byte) Integer.parseInt(text.substring(i * 2, i * 2 + 2), 16);
+        return result;
+    }
+
+    private static void equal(byte[] actual, byte[] expected, String reason) {
+        check(Arrays.equals(actual, expected), reason);
+    }
+
+    private static synchronized void check(boolean value, String reason) {
+        assertions++;
+        if (!value) throw new AssertionError(reason);
+    }
+
+    private static void fails(Action action, String reason) throws Exception {
+        try { action.run(); } catch (IOException | IllegalArgumentException expected) { check(true, reason); return; }
+        throw new AssertionError(reason);
+    }
+}

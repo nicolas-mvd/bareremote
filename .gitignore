@@ -1,0 +1,12 @@
+build/
+.keys/
+.device-state/
+diagnostics/
+*.apk
+*.idsig
+*.p12
+*.key
+*.pem
+__pycache__/
+*.pyc
+.DS_Store
