@@ -7,18 +7,14 @@ import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.KeyEvent;
 import android.widget.RemoteViews;
 
-import java.util.concurrent.atomic.AtomicBoolean;
-
-/** A passive remote: work starts only when the user presses a button. */
+/** Widget taps start a temporary foreground session; no scheduled widget updates. */
 public final class RemoteWidget extends AppWidgetProvider {
     private static final String ACTION_KEY = "uy.nico.bareremote.WIDGET_KEY";
     private static final String EXTRA_KEY = "keycode";
-    private static final long RECEIVER_TIMEOUT_MS = 8000L;
+    private static volatile String lastStatus;
 
     private static final int[] BUTTONS = {
         R.id.widget_up, R.id.widget_down, R.id.widget_left, R.id.widget_right,
@@ -56,51 +52,29 @@ public final class RemoteWidget extends AppWidgetProvider {
         final int key = intent.getIntExtra(EXTRA_KEY, KeyEvent.KEYCODE_UNKNOWN);
         if (!supportedKey(key)) return;
 
-        final Context app = context.getApplicationContext();
-        final PendingResult pending = goAsync();
-        final AtomicBoolean finished = new AtomicBoolean();
-        final Handler handler = new Handler(Looper.getMainLooper());
-        // The engine has its own shorter network budget. This also releases the
-        // receiver if a future engine regression fails to invoke its callback.
-        final Runnable timeout = () -> finish(app, pending, finished,
-                "Timed out · open app to reconnect");
-        handler.postDelayed(timeout, RECEIVER_TIMEOUT_MS);
+        // Older installed widgets may still hold a broadcast PendingIntent. Replace
+        // their views and hand the tap to the service instead of retaining a receiver.
+        Context app = context.getApplicationContext();
         try {
             if (!RemoteEngine.get(app).isPaired()) {
-                handler.removeCallbacks(timeout);
-                finish(app, pending, finished, "Open app to pair your TV");
+                updateAll(app, "Tap to pair your TV");
                 return;
             }
-            updateAll(app, "Sending · " + keyLabel(key));
-            RemoteEngine.get(app).sendWidgetKey(key, error -> {
-                handler.removeCallbacks(timeout);
-                finish(app, pending, finished,
-                        error == null ? "Sent · " + keyLabel(key) : "Open app to reconnect");
-            });
-        } catch (RuntimeException error) {
-            handler.removeCallbacks(timeout);
-            finish(app, pending, finished, "Open app to reconnect");
+            updateAll(app, "Starting…");
+            app.startForegroundService(WidgetRemoteService.keyIntent(app, key));
+        } catch (RuntimeException denied) {
+            updateAll(app, "Open app to connect");
         }
     }
 
-    private static boolean supportedKey(int key) {
+    static boolean supportedKey(int key) {
         for (int supported : KEYS) if (supported == key) return true;
         return false;
     }
 
-    private static String keyLabel(int key) {
+    static String keyLabel(int key) {
         for (int i = 0; i < KEYS.length; i++) if (KEYS[i] == key) return LABELS[i];
         return "Control";
-    }
-
-    private static void finish(Context context, PendingResult pending,
-            AtomicBoolean finished, String status) {
-        if (!finished.compareAndSet(false, true)) return;
-        try {
-            updateAll(context, status);
-        } finally {
-            pending.finish();
-        }
     }
 
     public static void updateAll(Context context) {
@@ -108,6 +82,7 @@ public final class RemoteWidget extends AppWidgetProvider {
     }
 
     public static void updateAll(Context context, String status) {
+        if (status != null) lastStatus = status;
         AppWidgetManager manager = AppWidgetManager.getInstance(context);
         int[] ids = manager.getAppWidgetIds(new ComponentName(context, RemoteWidget.class));
         if (ids.length != 0) render(context, manager, ids, status);
@@ -117,8 +92,9 @@ public final class RemoteWidget extends AppWidgetProvider {
             String status) {
         RemoteViews views = new RemoteViews(context.getPackageName(), R.layout.remote_widget);
         boolean paired = RemoteEngine.get(context).isPaired();
+        if (!paired) lastStatus = null;
         String message = !paired ? "Tap to pair your TV"
-                : status != null ? status : "TV saved · tap to open";
+                : status != null ? status : lastStatus != null ? lastStatus : "Tap to connect";
         views.setTextViewText(R.id.widget_status, message);
         views.setContentDescription(R.id.widget_header, "BareRemote. " + message
                 + ". Open remote and connection settings.");
@@ -128,13 +104,15 @@ public final class RemoteWidget extends AppWidgetProvider {
         PendingIntent openApp = PendingIntent.getActivity(context, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.widget_header, openApp);
+        PendingIntent sync = paired ? PendingIntent.getForegroundService(context, 1001,
+                WidgetRemoteService.syncIntent(context),
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE) : openApp;
+        views.setOnClickPendingIntent(R.id.widget_sync, sync);
         for (int i = 0; i < BUTTONS.length; i++) {
             PendingIntent action = openApp;
             if (paired) {
-                Intent command = new Intent(context, RemoteWidget.class)
-                        .setAction(ACTION_KEY).putExtra(EXTRA_KEY, KEYS[i])
-                        .addFlags(Intent.FLAG_RECEIVER_FOREGROUND);
-                action = PendingIntent.getBroadcast(context, KEYS[i], command,
+                Intent command = WidgetRemoteService.keyIntent(context, KEYS[i]);
+                action = PendingIntent.getForegroundService(context, KEYS[i], command,
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             }
             // An unpaired widget opens the activity directly, without a broadcast

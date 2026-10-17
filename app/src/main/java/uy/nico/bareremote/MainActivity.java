@@ -1,9 +1,12 @@
 package uy.nico.bareremote;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -36,6 +39,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private TextView targetText;
     private TextView stateText;
     private TextView errorText;
+    private Button syncButton;
     private AlertDialog setupDialog;
     private AlertDialog codeDialog;
     private AlertDialog helpDialog;
@@ -105,12 +109,24 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         LinearLayout title = column();
         TextView name = text("BareRemote", 22, WHITE);
         name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        name.setSingleLine(true);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         title.addView(name);
         targetText = text("", 13, MUTED);
         targetText.setSingleLine(true);
         targetText.setEllipsize(android.text.TextUtils.TruncateAt.END);
         title.addView(targetText);
         titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
+        syncButton = button("↻", "Reconnect to saved TV");
+        syncButton.setTextSize(26);
+        syncButton.setTooltipText("Sync: reconnect to saved TV");
+        syncButton.setOnClickListener(v -> {
+            clearError();
+            engine.reconnect();
+        });
+        LinearLayout.LayoutParams syncParams = new LinearLayout.LayoutParams(dp(48), dp(48));
+        syncParams.rightMargin = dp(8);
+        titleRow.addView(syncButton, syncParams);
         Button setup = button("Setup", "Set up or change TV");
         setup.setOnClickListener(v -> showSetup());
         titleRow.addView(setup, new LinearLayout.LayoutParams(dp(86), dp(48)));
@@ -173,7 +189,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         LinearLayout.LayoutParams widgetParams = new LinearLayout.LayoutParams(-1, dp(48));
         widgetParams.topMargin = dp(16);
         content.addView(addWidget, widgetParams);
-        TextView widgetHint = text("Give the widget a home-screen page. Touch and hold it, then drag the edges to resize.", 12, MUTED);
+        TextView widgetHint = text("Give the widget a home-screen page. Touch and hold it, then drag the edges to resize.\n\nThe widget keeps the remote connected for 1 minute after the last tap, with a temporary notification.", 12, MUTED);
         widgetHint.setPadding(0, dp(8), 0, dp(8));
         content.addView(widgetHint);
         content.addView(text("Prototype · Local Wi-Fi", 11, MUTED));
@@ -265,6 +281,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 pendingSetup = false;
                 pairingInterrupted = false;
                 pairingInProgress = true;
+                refreshSync();
                 clearError();
                 setupDialog.dismiss();
                 engine.startPairing(host);
@@ -327,6 +344,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         codeDraft = "";
         if (codeInput != null) codeInput.setText("");
         engine.cancelPairing();
+        refreshSync();
         stateText.setText(engine.isPaired() ? "TV saved" : "Pair a TV to begin");
     }
 
@@ -357,6 +375,22 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         enableControls(engine.isPaired());
         if (pendingCode) showCode();
         else if (pendingSetup) showSetup();
+        else getWindow().getDecorView().post(this::requestWidgetNotificationsOnce);
+    }
+
+    private void requestWidgetNotificationsOnce() {
+        if (Build.VERSION.SDK_INT < 33 || !resumed || isFinishing() || isDestroyed()
+                || !engine.isPaired() || pairingInProgress || pendingSetup || pendingCode
+                || setupDialog != null || codeDialog != null || helpDialog != null) return;
+        SharedPreferences ui = getSharedPreferences("ui", MODE_PRIVATE);
+        if (ui.getBoolean("widget_notifications_requested", false)) return;
+        // Record before opening the system prompt: its pause/resume must not ask again.
+        ui.edit().putBoolean("widget_notifications_requested", true).apply();
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[] {Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
+        // Permission is optional; widget commands remain available after a denial.
     }
 
     @Override protected void onPause() {
@@ -397,6 +431,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     @Override public void onPairingCodeNeeded() {
         pairingInProgress = true;
+        refreshSync();
         showCode();
     }
 
@@ -413,10 +448,12 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         clearError();
         refreshTarget();
         enableControls(true);
+        getWindow().getDecorView().post(this::requestWidgetNotificationsOnce);
     }
 
     @Override public void onError(String message) {
         pairingInProgress = false;
+        refreshSync();
         stateText.setText(engine.isPaired() ? "TV saved" : "Pair your TV in Setup");
         errorText.setText("Error: " + message);
         errorText.setVisibility(View.VISIBLE);
@@ -435,6 +472,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 dismissCode();
                 clearError();
                 pairingInProgress = true;
+                refreshSync();
                 engine.startPairing(hostDraft);
             });
         }
@@ -452,6 +490,13 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             button.setEnabled(enabled);
             button.setAlpha(enabled ? 1f : .38f);
         }
+        refreshSync();
+    }
+
+    private void refreshSync() {
+        boolean enabled = engine.isPaired() && !pairingInProgress;
+        syncButton.setEnabled(enabled);
+        syncButton.setAlpha(enabled ? 1f : .38f);
     }
 
     private void clearError() { errorText.setVisibility(View.GONE); }

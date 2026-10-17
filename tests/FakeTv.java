@@ -72,7 +72,8 @@ public final class FakeTv {
                                     System.out.println("SESSION_CLOSED id=" + session + " type="
                                             + (pairing ? "pairing" : "remote") + " reason="
                                             + failure.getClass().getSimpleName()
-                                            + (failure instanceof javax.net.ssl.SSLException ? " detail=" + failure.getMessage() : ""));
+                                            + (failure instanceof javax.net.ssl.SSLException ? " detail=" + failure.getMessage() : "")
+                                            + " at_ms=" + elapsedMs());
                                 }
                             }
                         });
@@ -141,7 +142,7 @@ public final class FakeTv {
         read(socket).message(2);
         final long inputReadyAt = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(200);
         write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
-        System.out.println("REMOTE_READY id=" + session + " features=" + features + " mutualTLS=true");
+        System.out.println("REMOTE_READY id=" + session + " features=" + features + " mutualTLS=true at_ms=" + elapsedMs());
         socket.setSoTimeout(20000);
         final AtomicInteger pingId = new AtomicInteger();
         final AtomicBoolean live = new AtomicBoolean(true);
@@ -165,7 +166,8 @@ public final class FakeTv {
                     long direction = key.integer(2, 0);
                     final String directionName = direction == 3 ? "SHORT" : direction == 1 ? "START_LONG"
                             : direction == 2 ? "END_LONG" : "UNKNOWN";
-                    System.out.println("KEY id=" + session + " code=" + code + " direction=" + directionName);
+                    System.out.println("KEY id=" + session + " code=" + code + " direction=" + directionName
+                            + " at_ms=" + elapsedMs());
                     if (System.nanoTime() < inputReadyAt) {
                         System.out.println("KEY_IGNORED_NOT_READY id=" + session + " code=" + code);
                         continue;
@@ -174,7 +176,7 @@ public final class FakeTv {
                     pendingKeys.add(timers.schedule(new Runnable() {
                         @Override public void run() {
                             if (live.get()) System.out.println("KEY_APPLIED id=" + session
-                                    + " code=" + code + " direction=" + directionName);
+                                    + " code=" + code + " direction=" + directionName + " at_ms=" + elapsedMs());
                         }
                     }, 250, TimeUnit.MILLISECONDS));
                 } else if (message.has(9)) {
@@ -196,6 +198,8 @@ public final class FakeTv {
                 socket.getSession().getPeerCertificates()[0].getEncoded());
         return java.util.Base64.getEncoder().encodeToString(hash);
     }
+
+    private static long elapsedMs() { return TimeUnit.NANOSECONDS.toMillis(System.nanoTime()); }
 
     private static void requirePairing(Proto.Message message, int expected) throws IOException {
         if (message.integer(1, 0) != 2 || message.integer(2, 0) != 200 || !message.has(expected)) {

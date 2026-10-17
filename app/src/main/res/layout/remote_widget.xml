@@ -8,33 +8,45 @@
     android:background="@drawable/widget_background">
 
     <LinearLayout
-        android:id="@+id/widget_header"
         android:layout_width="match_parent"
         android:layout_height="48dp"
-        android:orientation="vertical"
-        android:gravity="center_vertical"
-        android:paddingLeft="5dp"
-        android:paddingRight="5dp"
-        android:contentDescription="BareRemote. Open remote and connection settings.">
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="BAREREMOTE"
-            android:textColor="#FFFFFFFF"
-            android:fontFamily="sans-serif-medium"
-            android:letterSpacing="0.12"
-            android:textSize="12sp"
-            android:importantForAccessibility="no" />
-        <TextView
-            android:id="@+id/widget_status"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Tap to pair your TV"
-            android:textColor="#FF999999"
-            android:textSize="11sp"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:importantForAccessibility="no" />
+        android:orientation="horizontal">
+        <LinearLayout
+            android:id="@+id/widget_header"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:orientation="vertical"
+            android:gravity="center_vertical"
+            android:paddingLeft="5dp"
+            android:paddingRight="5dp"
+            android:contentDescription="BareRemote. Open remote and connection settings.">
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="BAREREMOTE"
+                android:textColor="#FFFFFFFF"
+                android:fontFamily="sans-serif-medium"
+                android:letterSpacing="0.12"
+                android:textSize="12sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:importantForAccessibility="no" />
+            <TextView
+                android:id="@+id/widget_status"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Tap to pair your TV"
+                android:textColor="#FF999999"
+                android:textSize="11sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:importantForAccessibility="no" />
+        </LinearLayout>
+        <Button android:id="@+id/widget_sync" style="@style/WidgetRemoteButton"
+            android:layout_width="48dp" android:layout_height="48dp"
+            android:layout_weight="0" android:layout_margin="0dp"
+            android:text="↻" android:contentDescription="Sync: reconnect to TV" />
     </LinearLayout>
 
     <LinearLayout
