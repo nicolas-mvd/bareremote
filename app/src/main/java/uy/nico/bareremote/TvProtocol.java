@@ -33,7 +33,7 @@ public final class TvProtocol {
     private static final int CONNECT_TIMEOUT_MS = 2000;
     private static final int HANDSHAKE_TIMEOUT_MS = 6000;
     private static final int REMOTE_IDLE_TIMEOUT_MS = 16000;
-    private static final int FEATURES = 1 | 2 | 32 | 64; // Ping, keys, power, volume. No IME/voice.
+    private static final int FEATURES = 1 | 2 | 32 | 64 | 512; // Ping, keys, power, volume, app links. No IME/voice.
     // Conscrypt close() can send close_notify. Never run TLS shutdown on an Android UI caller.
     // Raw transports close immediately; this bounded native cleanup worker disappears when idle.
     private static final ThreadPoolExecutor TLS_CLEANUP = new ThreadPoolExecutor(0, 1, 1,
@@ -169,7 +169,7 @@ public final class TvProtocol {
         private final Object deliveryLock = new Object();
         private volatile boolean closed;
         private long lastKeyWriteNanos;
-        private int features;
+        private volatile int features;
         private boolean configured;
 
         private Remote(Connection connection) throws IOException {
@@ -248,6 +248,28 @@ public final class TvProtocol {
             }
         }
 
+        /** The public API exposes only fixed BareHome commands, never arbitrary links. */
+        public void sendPictureMode(boolean night) throws IOException {
+            sendBareHomeLink(night ? "barehome://picture/night" : "barehome://picture/day");
+        }
+
+        public void sendInputPicker() throws IOException {
+            sendBareHomeLink("barehome://inputs");
+        }
+
+        private void sendBareHomeLink(String link) throws IOException {
+            synchronized (keyLock) {
+                if ((features & 512) == 0) {
+                    throw new UnsupportedOperationException("This TV remote service does not support BareHome commands.");
+                }
+                send(new Proto.Writer().message(90, new Proto.Writer().text(1, link)));
+                synchronized (deliveryLock) {
+                    lastKeyWriteNanos = System.nanoTime();
+                    deliveryLock.notifyAll();
+                }
+            }
+        }
+
         /**
          * Keep a one-command session alive while the TV dispatches its queued input.
          * Worker-only: waits at most 750 ms from the latest successful key write while
@@ -309,7 +331,7 @@ public final class TvProtocol {
                 features = (int) supported & FEATURES;
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.1.2");
+                        .text(5, "uy.nico.bareremote").text(6, "0.2.0");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;

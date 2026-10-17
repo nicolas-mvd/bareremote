@@ -88,7 +88,7 @@ public class KeyEvent {
     public static final int KEYCODE_DPAD_UP=19, KEYCODE_DPAD_DOWN=20, KEYCODE_DPAD_LEFT=21,
         KEYCODE_DPAD_RIGHT=22, KEYCODE_DPAD_CENTER=23, KEYCODE_BACK=4, KEYCODE_HOME=3,
         KEYCODE_VOLUME_UP=24, KEYCODE_VOLUME_DOWN=25, KEYCODE_VOLUME_MUTE=164,
-        KEYCODE_MEDIA_PLAY_PAUSE=85, KEYCODE_POWER=26;
+        KEYCODE_MEDIA_PLAY_PAUSE=85, KEYCODE_POWER=26, KEYCODE_TV_INPUT=178;
 }
 """,
     "uy/nico/bareremote/PhoneIdentity.java": """
@@ -114,6 +114,8 @@ final class TvProtocol {
     static final class Remote {
         static final java.util.List<Remote> connections = new CopyOnWriteArrayList<>();
         static final java.util.List<Integer> keys = new CopyOnWriteArrayList<>();
+        static final java.util.List<Boolean> modes = new CopyOnWriteArrayList<>();
+        static final java.util.List<String> inputs = new CopyOnWriteArrayList<>();
         static volatile CountDownLatch connectGate, connectEntered, writeEntered;
         static volatile boolean blockWrite;
         volatile boolean open=true;
@@ -130,9 +132,11 @@ final class TvProtocol {
             if (blockWrite) { blockWrite=false; writeEntered.countDown(); closed.await(); throw new java.io.IOException("Closed while writing"); }
             keys.add(key);
         }
+        void sendInputPicker() throws Exception { if (!open) throw new java.io.IOException("Closed"); inputs.add("picker"); }
+        void sendPictureMode(boolean night) throws Exception { if (!open) throw new java.io.IOException("Closed"); modes.add(night); }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { connections.clear(); keys.clear(); connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; }
+        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; }
     }
 }
 """,

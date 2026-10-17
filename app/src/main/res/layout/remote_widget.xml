@@ -1,101 +1,104 @@
 <?xml version="1.0" encoding="utf-8"?>
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@android:id/background"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:padding="8dp"
-    android:orientation="vertical"
+    android:layout_width="match_parent" android:layout_height="match_parent"
+    android:padding="12dp" android:orientation="vertical"
     android:background="@drawable/widget_background">
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="48dp"
-        android:orientation="horizontal">
-        <LinearLayout
-            android:id="@+id/widget_header"
-            android:layout_width="0dp"
-            android:layout_height="match_parent"
-            android:layout_weight="1"
-            android:orientation="vertical"
-            android:gravity="center_vertical"
-            android:paddingLeft="5dp"
-            android:paddingRight="5dp"
-            android:contentDescription="BareRemote. Open remote and connection settings.">
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="BAREREMOTE"
-                android:textColor="#FFFFFFFF"
-                android:fontFamily="sans-serif-medium"
-                android:letterSpacing="0.12"
-                android:textSize="12sp"
-                android:maxLines="1"
-                android:ellipsize="end"
-                android:importantForAccessibility="no" />
-            <TextView
-                android:id="@+id/widget_status"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="Tap to pair your TV"
-                android:textColor="#FF999999"
-                android:textSize="11sp"
-                android:maxLines="1"
-                android:ellipsize="end"
-                android:importantForAccessibility="no" />
-        </LinearLayout>
-        <Button android:id="@+id/widget_sync" style="@style/WidgetRemoteButton"
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <ImageButton android:id="@+id/widget_header" style="@style/WidgetRemoteIcon"
             android:layout_width="48dp" android:layout_height="48dp"
-            android:layout_weight="0" android:layout_margin="0dp"
-            android:text="↻" android:contentDescription="Sync: reconnect to TV" />
+            android:src="@drawable/remote_icon_setup"
+            android:contentDescription="BareRemote. Open remote and connection settings." />
+        <TextView android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" android:importantForAccessibility="no" />
+        <LinearLayout android:layout_width="144dp" android:layout_height="48dp"
+            android:orientation="horizontal" android:background="@drawable/widget_sync_group">
+            <ImageButton android:id="@+id/widget_sync" style="@style/WidgetRemoteIcon.Mode"
+                android:src="@drawable/remote_icon_sync" android:contentDescription="Sync: reconnect to TV" />
+            <ImageButton android:id="@+id/widget_day" style="@style/WidgetRemoteIcon.Mode"
+                android:src="@drawable/remote_icon_sun" android:contentDescription="Day: apply BareHome daytime picture" />
+            <ImageButton android:id="@+id/widget_night" style="@style/WidgetRemoteIcon.Mode"
+                android:src="@drawable/remote_icon_moon" android:contentDescription="Night: apply BareHome nighttime picture" />
+        </LinearLayout>
+        <TextView android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" android:importantForAccessibility="no" />
+        <ImageButton android:id="@+id/widget_power" style="@style/WidgetRemoteIcon"
+            android:layout_width="48dp" android:layout_height="48dp"
+            android:src="@drawable/remote_icon_power" android:contentDescription="TV power" />
     </LinearLayout>
 
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
-        <Button android:id="@+id/widget_back" style="@style/WidgetRemoteButton.Utility"
-            android:text="Back" android:contentDescription="Back" />
-        <Button android:id="@+id/widget_up" style="@style/WidgetRemoteButton"
-            android:text="↑" android:contentDescription="Up" />
-        <Button android:id="@+id/widget_power" style="@style/WidgetRemoteButton.Utility"
-            android:text="Power" android:contentDescription="TV power" />
+    <LinearLayout android:id="@+id/widget_status_header"
+        android:layout_width="match_parent" android:layout_height="30dp"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:text="BAREREMOTE" android:textColor="#FFB7BFBA" android:textSize="9sp"
+            android:fontFamily="sans-serif-medium" android:letterSpacing="0.08"
+            android:importantForAccessibility="no" />
+        <TextView android:id="@+id/widget_status" android:layout_width="0dp"
+            android:layout_height="wrap_content" android:layout_weight="1"
+            android:layout_marginLeft="8dp" android:gravity="right"
+            android:text="Tap to pair your TV" android:textColor="#FFB7BFBA"
+            android:textSize="10sp" android:maxLines="1" android:ellipsize="end"
+            android:importantForAccessibility="no" />
     </LinearLayout>
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
-        <Button android:id="@+id/widget_left" style="@style/WidgetRemoteButton"
-            android:text="←" android:contentDescription="Left" />
-        <Button android:id="@+id/widget_ok" style="@style/WidgetRemoteButton"
-            android:text="OK" android:textSize="20sp"
-            android:fontFamily="sans-serif-medium" android:contentDescription="OK, select" />
-        <Button android:id="@+id/widget_right" style="@style/WidgetRemoteButton"
-            android:text="→" android:contentDescription="Right" />
+
+    <FrameLayout android:layout_width="match_parent" android:layout_height="0dp"
+        android:layout_weight="1">
+        <RelativeLayout android:id="@+id/widget_dpad" android:layout_width="240dp"
+            android:layout_height="240dp" android:layout_gravity="center"
+            android:background="@drawable/widget_dpad_circle">
+            <ImageButton android:id="@+id/widget_up" style="@style/WidgetRemoteIcon.Direction"
+                android:layout_width="match_parent" android:layout_height="80dp"
+                android:layout_alignParentTop="true" android:src="@drawable/remote_icon_up"
+                android:contentDescription="Up" />
+            <ImageButton android:id="@+id/widget_down" style="@style/WidgetRemoteIcon.Direction"
+                android:layout_width="match_parent" android:layout_height="80dp"
+                android:layout_alignParentBottom="true" android:src="@drawable/remote_icon_down"
+                android:contentDescription="Down" />
+            <ImageButton android:id="@+id/widget_left" style="@style/WidgetRemoteIcon.Direction"
+                android:layout_width="80dp" android:layout_height="80dp"
+                android:layout_alignParentLeft="true" android:layout_centerVertical="true"
+                android:src="@drawable/remote_icon_left" android:contentDescription="Left" />
+            <ImageButton android:id="@+id/widget_right" style="@style/WidgetRemoteIcon.Direction"
+                android:layout_width="80dp" android:layout_height="80dp"
+                android:layout_alignParentRight="true" android:layout_centerVertical="true"
+                android:src="@drawable/remote_icon_right" android:contentDescription="Right" />
+            <TextView android:id="@+id/widget_ok" android:layout_width="94dp"
+                android:layout_height="94dp" android:layout_centerInParent="true"
+                android:background="@drawable/widget_ok_button" android:text=""
+                android:gravity="center" android:contentDescription="OK, select"
+                android:focusable="true" />
+        </RelativeLayout>
+    </FrameLayout>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="76dp"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <FrameLayout android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1">
+            <ImageButton android:id="@+id/widget_back" style="@style/WidgetRemoteIcon"
+                android:layout_width="64dp" android:layout_height="64dp"
+                android:layout_gravity="center" android:src="@drawable/remote_icon_back"
+                android:contentDescription="Back" />
+        </FrameLayout>
+        <ImageButton android:id="@+id/widget_home" style="@style/WidgetRemoteIcon.Bottom"
+            android:layout_weight="1.5" android:src="@drawable/remote_icon_home"
+            android:contentDescription="TV home" />
+        <FrameLayout android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_weight="1">
+            <ImageButton android:id="@+id/widget_input" style="@style/WidgetRemoteIcon"
+                android:layout_width="64dp" android:layout_height="64dp"
+                android:layout_gravity="center" android:src="@drawable/remote_icon_gamepad"
+                android:contentDescription="Input: choose TV source" />
+        </FrameLayout>
     </LinearLayout>
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
-        <Button android:id="@+id/widget_home" style="@style/WidgetRemoteButton.Utility"
-            android:text="Home" android:contentDescription="TV home" />
-        <Button android:id="@+id/widget_down" style="@style/WidgetRemoteButton"
-            android:text="↓" android:contentDescription="Down" />
-        <Button android:id="@+id/widget_play" style="@style/WidgetRemoteButton.Utility"
-            android:text="Play / II" android:contentDescription="Play or pause" />
-    </LinearLayout>
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
-        <Button android:id="@+id/widget_volume_down" style="@style/WidgetRemoteButton.Utility"
-            android:text="Vol −" android:contentDescription="Volume down" />
-        <Button android:id="@+id/widget_mute" style="@style/WidgetRemoteButton.Utility"
-            android:text="Mute" android:contentDescription="Toggle mute" />
-        <Button android:id="@+id/widget_volume_up" style="@style/WidgetRemoteButton.Utility"
-            android:text="Vol +" android:contentDescription="Volume up" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp"
+        android:orientation="horizontal" android:gravity="center_vertical">
+        <ImageButton android:id="@+id/widget_mute" style="@style/WidgetRemoteIcon.Volume"
+            android:layout_weight="1" android:src="@drawable/remote_icon_mute"
+            android:contentDescription="Toggle mute" />
+        <ImageButton android:id="@+id/widget_volume_down" style="@style/WidgetRemoteIcon.Volume"
+            android:src="@drawable/remote_icon_volume_down" android:contentDescription="Volume down" />
+        <ImageButton android:id="@+id/widget_volume_up" style="@style/WidgetRemoteIcon.Volume"
+            android:src="@drawable/remote_icon_volume_up" android:contentDescription="Volume up" />
     </LinearLayout>
 </LinearLayout>

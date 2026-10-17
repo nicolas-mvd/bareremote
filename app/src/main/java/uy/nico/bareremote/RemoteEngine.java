@@ -205,6 +205,7 @@ final class RemoteEngine {
                     pairing = null;
                     pendingHost = null;
                     removePairingExpiry();
+                    RemoteWidget.updateAll(context, "Tap to connect");
                     state("Paired");
                     Listener target = listener;
                     if (target != null) target.onPaired();
@@ -252,8 +253,15 @@ final class RemoteEngine {
     void sendLongKey(int key) { command(key, true, null); }
     void sendWidgetKey(int key, Completion completion) { command(key, false, completion); }
 
+    void sendPictureMode(boolean night) { sendPictureMode(night, null); }
+    void sendPictureMode(boolean night, Completion completion) { command(0, false, night, completion); }
+
     private void command(int key, boolean longPress, Completion completion) {
-        if (!allowedKey(key)) { finish(completion, "Unknown control"); return; }
+        command(key, longPress, null, completion);
+    }
+
+    private void command(int key, boolean longPress, Boolean pictureNight, Completion completion) {
+        if (pictureNight == null && !allowedKey(key)) { finish(completion, "Unknown control"); return; }
         if (!isPaired()) { finish(completion, "Open BareRemote and pair your TV"); return; }
         if (pairingBusy) { finish(completion, "Finish pairing in the app first"); return; }
         final Operation operation = new Operation(generation.get(), completion);
@@ -276,7 +284,9 @@ final class RemoteEngine {
                     operation.writing = connection;
                     writeAttempted = true;
                 }
-                if (longPress) connection.sendLongKey(key); else connection.sendKey(key);
+                if (pictureNight != null) connection.sendPictureMode(pictureNight);
+                else if (key == KeyEvent.KEYCODE_TV_INPUT) connection.sendInputPicker();
+                else if (longPress) connection.sendLongKey(key); else connection.sendKey(key);
                 synchronized (connectionLock) { operation.writing = null; }
                 if (completion == null) {
                     complete(operation, null);
@@ -456,6 +466,7 @@ final class RemoteEngine {
             case KeyEvent.KEYCODE_HOME: case KeyEvent.KEYCODE_VOLUME_UP:
             case KeyEvent.KEYCODE_VOLUME_DOWN: case KeyEvent.KEYCODE_VOLUME_MUTE:
             case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE: case KeyEvent.KEYCODE_POWER:
+            case KeyEvent.KEYCODE_TV_INPUT:
                 return true;
             default: return false;
         }
@@ -477,6 +488,7 @@ final class RemoteEngine {
         return canonical.toString();
     }
     private static String message(Exception failure) {
+        if (failure instanceof UnsupportedOperationException) return failure.getMessage();
         if (failure instanceof SocketTimeoutException) return "TV timed out. Check that both devices are on the same Wi-Fi.";
         String detail = failure.getMessage();
         if (detail != null && (detail.contains("code") || detail.contains("Code")

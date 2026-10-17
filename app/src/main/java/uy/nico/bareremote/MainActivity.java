@@ -7,10 +7,11 @@ import android.appwidget.AppWidgetManager;
 import android.content.ComponentName;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.content.res.ColorStateList;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputFilter;
@@ -22,6 +23,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -32,11 +34,13 @@ import java.util.Locale;
 
 /** A remote, immediately. No content feed, accounts, or background UI work. */
 public final class MainActivity extends Activity implements RemoteEngine.Listener {
-    private static final int WHITE = 0xffeeeeee;
+    private static final int WHITE = 0xffdadcd9;
+    private static final int SURFACE = 0xff303234;
+    private static final int GREEN = 0xff7bd99a;
+    private static final int GREEN_INK = 0xff153d25;
     private static final int MUTED = 0xffaaaaaa;
-    private final List<Button> remoteButtons = new ArrayList<>();
+    private final List<View> remoteButtons = new ArrayList<>();
     private RemoteEngine engine;
-    private TextView targetText;
     private TextView stateText;
     private TextView errorText;
     private Button syncButton;
@@ -56,8 +60,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     @Override public void onCreate(Bundle savedState) {
         super.onCreate(savedState);
         requestWindowFeature(Window.FEATURE_NO_TITLE);
-        getWindow().setStatusBarColor(Color.BLACK);
-        getWindow().setNavigationBarColor(Color.BLACK);
+        getWindow().setStatusBarColor(SURFACE);
+        getWindow().setNavigationBarColor(SURFACE);
         if (Build.VERSION.SDK_INT >= 29) getWindow().setNavigationBarContrastEnforced(false);
         if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         else getWindow().getDecorView().setSystemUiVisibility(
@@ -81,8 +85,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     private void createRemote() {
         LinearLayout screen = column();
-        screen.setBackgroundColor(Color.BLACK);
-        screen.setPadding(dp(16), dp(12), dp(16), dp(12));
+        screen.setBackgroundColor(SURFACE);
+        screen.setPadding(dp(12), dp(8), dp(12), dp(12));
         screen.setOnApplyWindowInsetsListener((view, insets) -> {
             int left, top, right, bottom;
             if (Build.VERSION.SDK_INT >= 30) {
@@ -95,128 +99,156 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 right = insets.getSystemWindowInsetRight();
                 bottom = insets.getSystemWindowInsetBottom();
             }
-            view.setPadding(dp(16) + left, dp(12) + top, dp(16) + right, dp(12) + bottom);
+            view.setPadding(dp(12) + left, dp(8) + top, dp(12) + right, dp(12) + bottom);
             return insets;
         });
-        ScrollView scroll = new ScrollView(this);
+        ScrollView scroll = new RemoteScrollView(this);
         scroll.setFillViewport(true);
-        scroll.setClipToPadding(false);
+        scroll.setVerticalScrollBarEnabled(false);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
-        LinearLayout content = column();
+        RemoteSurface content = new RemoteSurface(this);
         scroll.addView(content, new ScrollView.LayoutParams(-1, -2));
 
-        LinearLayout titleRow = row();
-        LinearLayout title = column();
-        TextView name = text("BareRemote", 22, WHITE);
-        name.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
-        name.setSingleLine(true);
-        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        title.addView(name);
-        targetText = text("", 13, MUTED);
-        targetText.setSingleLine(true);
-        targetText.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        title.addView(targetText);
-        titleRow.addView(title, new LinearLayout.LayoutParams(0, -2, 1));
-        syncButton = button("↻", "Reconnect to saved TV");
-        syncButton.setTextSize(26);
-        syncButton.setTooltipText("Sync: reconnect to saved TV");
-        syncButton.setOnClickListener(v -> {
-            clearError();
-            engine.reconnect();
-        });
-        LinearLayout.LayoutParams syncParams = new LinearLayout.LayoutParams(dp(48), dp(48));
-        syncParams.rightMargin = dp(8);
-        titleRow.addView(syncButton, syncParams);
-        Button setup = button("Setup", "Set up or change TV");
+        LinearLayout header = row();
+        ImageButton setup = icon(R.drawable.remote_icon_setup, "Setup");
         setup.setOnClickListener(v -> showSetup());
-        titleRow.addView(setup, new LinearLayout.LayoutParams(dp(86), dp(48)));
-        content.addView(titleRow);
-        stateText = text(engine.isPaired() ? "Connecting…" : "Pair a TV to begin", 14, MUTED);
+        header.addView(setup, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout shortcuts = row();
+        shortcuts.setBackground(roundFill(GREEN, 100));
+        syncButton = button("Sync", "Reconnect to saved TV");
+        syncButton.setTextColor(GREEN_INK);
+        syncButton.setTextSize(13);
+        syncButton.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        syncButton.setBackground(roundStates(0x00000000, 0x2230523a, 100));
+        syncButton.setPadding(dp(8), 0, dp(4), 0);
+        Drawable syncIcon = getDrawable(R.drawable.remote_icon_sync).mutate();
+        syncIcon.setTint(GREEN_INK);
+        syncIcon.setBounds(0, 0, dp(19), dp(19));
+        syncButton.setCompoundDrawables(syncIcon, null, null, null);
+        syncButton.setCompoundDrawablePadding(dp(4));
+        syncButton.setTooltipText("Sync: reconnect to saved TV");
+        syncButton.setOnClickListener(v -> { clearError(); engine.reconnect(); });
+        shortcuts.addView(syncButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        View divider = spacer();
+        divider.setBackgroundColor(0x35153d25);
+        shortcuts.addView(divider, new LinearLayout.LayoutParams(dp(1), dp(26)));
+        ImageButton day = modeButton(R.drawable.remote_icon_sun, "Day", false);
+        ImageButton night = modeButton(R.drawable.remote_icon_moon, "Night", true);
+        shortcuts.addView(day, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        shortcuts.addView(night, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        LinearLayout.LayoutParams shortParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        shortParams.leftMargin = dp(8);
+        shortParams.rightMargin = dp(8);
+        header.addView(shortcuts, shortParams);
+        ImageButton power = keyIcon(R.drawable.remote_icon_power, "TV power", KeyEvent.KEYCODE_POWER);
+        header.addView(power, new LinearLayout.LayoutParams(dp(48), dp(48)));
+        content.setHeader(header);
+
+        LinearLayout status = column();
+        stateText = text(engine.isPaired() ? "Connecting…" : "Pair a TV in Setup", 12, MUTED);
+        stateText.setGravity(Gravity.CENTER);
         stateText.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        LinearLayout.LayoutParams stateParams = new LinearLayout.LayoutParams(-1, -2);
-        stateParams.topMargin = dp(10);
-        stateParams.bottomMargin = dp(6);
-        content.addView(stateText, stateParams);
-        errorText = text("", 14, WHITE);
+        stateText.setPadding(0, dp(10), 0, 0);
+        status.addView(stateText);
+        errorText = text("", 13, WHITE);
+        errorText.setGravity(Gravity.CENTER);
+        errorText.setPadding(dp(8), dp(6), dp(8), 0);
         errorText.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_ASSERTIVE);
         errorText.setVisibility(View.GONE);
-        content.addView(errorText, new LinearLayout.LayoutParams(-1, -2));
+        status.addView(errorText, new LinearLayout.LayoutParams(-1, -2));
+        content.setStatus(status);
 
-        LinearLayout pad = column();
-        pad.setPadding(0, dp(10), 0, dp(10));
-        LinearLayout top = row();
-        top.addView(spacer(), new LinearLayout.LayoutParams(0, dp(64), 1));
-        addControl(top, "↑", "Up", KeyEvent.KEYCODE_DPAD_UP, 64);
-        top.addView(spacer(), new LinearLayout.LayoutParams(0, dp(64), 1));
-        pad.addView(top);
-        LinearLayout middle = row();
-        addControl(middle, "←", "Left", KeyEvent.KEYCODE_DPAD_LEFT, 64);
-        Button okay = addControl(middle, "OK", "OK. Touch and hold for a long press",
-                KeyEvent.KEYCODE_DPAD_CENTER, 64);
+        RemoteDpad pad = new RemoteDpad(this);
+        pad.addDirection(keyIcon(R.drawable.remote_icon_up, "Up", KeyEvent.KEYCODE_DPAD_UP));
+        pad.addDirection(keyIcon(R.drawable.remote_icon_right, "Right", KeyEvent.KEYCODE_DPAD_RIGHT));
+        pad.addDirection(keyIcon(R.drawable.remote_icon_down, "Down", KeyEvent.KEYCODE_DPAD_DOWN));
+        pad.addDirection(keyIcon(R.drawable.remote_icon_left, "Left", KeyEvent.KEYCODE_DPAD_LEFT));
+        ImageButton okay = keyIcon(0, "OK. Touch and hold for a long press", KeyEvent.KEYCODE_DPAD_CENTER);
         okay.setOnLongClickListener(v -> {
             clearError();
             engine.sendLongKey(KeyEvent.KEYCODE_DPAD_CENTER);
             return true;
         });
-        addControl(middle, "→", "Right", KeyEvent.KEYCODE_DPAD_RIGHT, 64);
-        LinearLayout.LayoutParams middleParams = new LinearLayout.LayoutParams(-1, -2);
-        middleParams.topMargin = dp(8);
-        middleParams.bottomMargin = dp(8);
-        pad.addView(middle, middleParams);
-        LinearLayout bottom = row();
-        bottom.addView(spacer(), new LinearLayout.LayoutParams(0, dp(64), 1));
-        addControl(bottom, "↓", "Down", KeyEvent.KEYCODE_DPAD_DOWN, 64);
-        bottom.addView(spacer(), new LinearLayout.LayoutParams(0, dp(64), 1));
-        pad.addView(bottom);
-        content.addView(pad);
+        pad.setCenter(okay);
+        content.setPad(pad);
 
         LinearLayout navigation = row();
-        addControl(navigation, "Back", "Back", KeyEvent.KEYCODE_BACK, 52);
-        addControl(navigation, "Home", "TV home", KeyEvent.KEYCODE_HOME, 52);
-        addRow(content, navigation);
+        ImageButton back = keyIcon(R.drawable.remote_icon_back, "Back", KeyEvent.KEYCODE_BACK);
+        ImageButton home = keyIcon(R.drawable.remote_icon_home, "TV home", KeyEvent.KEYCODE_HOME);
+        ImageButton input = keyIcon(R.drawable.remote_icon_gamepad, "Input / source", KeyEvent.KEYCODE_TV_INPUT);
+        addWeightedIcon(navigation, back, 1);
+        addWeightedIcon(navigation, home, 1.35f);
+        addWeightedIcon(navigation, input, 1);
+        // Inset circular faces inside equally generous native touch targets.
+        back.setBackground(new CircularButtonDrawable());
+        input.setBackground(new CircularButtonDrawable());
+        content.setNavigation(navigation);
         LinearLayout volume = row();
-        addControl(volume, "Vol −", "Volume down", KeyEvent.KEYCODE_VOLUME_DOWN, 52);
-        addControl(volume, "Mute", "Mute or unmute", KeyEvent.KEYCODE_VOLUME_MUTE, 52);
-        addControl(volume, "Vol +", "Volume up", KeyEvent.KEYCODE_VOLUME_UP, 52);
-        addRow(content, volume);
-        LinearLayout playback = row();
-        addControl(playback, "Play / Pause", "Play or pause", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, 52);
-        addControl(playback, "Power", "TV power", KeyEvent.KEYCODE_POWER, 52);
-        addRow(content, playback);
-
-        Button addWidget = button("Add widget", "Add a remote widget to your home screen");
-        addWidget.setOnClickListener(v -> addWidget());
-        LinearLayout.LayoutParams widgetParams = new LinearLayout.LayoutParams(-1, dp(48));
-        widgetParams.topMargin = dp(16);
-        content.addView(addWidget, widgetParams);
-        TextView widgetHint = text("Give the widget a home-screen page. Touch and hold it, then drag the edges to resize.\n\nThe widget keeps the remote connected for 1 minute after the last tap, with a temporary notification.", 12, MUTED);
-        widgetHint.setPadding(0, dp(8), 0, dp(8));
-        content.addView(widgetHint);
-        content.addView(text("Prototype · Local Wi-Fi", 11, MUTED));
+        addWeightedIcon(volume, keyIcon(R.drawable.remote_icon_mute, "Mute or unmute", KeyEvent.KEYCODE_VOLUME_MUTE), .72f);
+        addWeightedIcon(volume, keyIcon(R.drawable.remote_icon_volume_down, "Volume down", KeyEvent.KEYCODE_VOLUME_DOWN), 1.2f);
+        addWeightedIcon(volume, keyIcon(R.drawable.remote_icon_volume_up, "Volume up", KeyEvent.KEYCODE_VOLUME_UP), 1.2f);
+        content.setVolume(volume);
         setContentView(screen);
         screen.requestApplyInsets();
         refreshTarget();
         enableControls(engine.isPaired());
     }
 
-    private Button addControl(LinearLayout row, String label, String description, int key, int height) {
-        Button control = button(label, description);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(height), 1);
-        params.leftMargin = dp(4);
-        params.rightMargin = dp(4);
-        row.addView(control, params);
-        control.setOnClickListener(v -> {
-            clearError();
-            engine.sendKey(key);
-        });
-        remoteButtons.add(control);
-        return control;
+    private ImageButton icon(int resource, String description) {
+        ImageButton button = new ImageButton(this);
+        if (resource != 0) button.setImageResource(resource);
+        button.setContentDescription(description);
+        button.setTooltipText(description);
+        button.setScaleType(android.widget.ImageView.ScaleType.CENTER);
+        button.setBackground(roundStates(0xff1c1e1d, 0xff454b47, 100));
+        button.setMinimumWidth(dp(48));
+        button.setMinimumHeight(dp(48));
+        button.setPadding(dp(12), dp(12), dp(12), dp(12));
+        button.setStateListAnimator(null);
+        return button;
     }
 
-    private void addRow(LinearLayout content, LinearLayout row) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
-        params.topMargin = dp(8);
-        content.addView(row, params);
+    private ImageButton keyIcon(int resource, String description, int key) {
+        ImageButton button = icon(resource, description);
+        button.setOnClickListener(v -> { clearError(); engine.sendKey(key); });
+        remoteButtons.add(button);
+        return button;
+    }
+
+    private ImageButton modeButton(int resource, String description, boolean night) {
+        ImageButton button = icon(resource, description + " · BareHome");
+        button.setImageTintList(ColorStateList.valueOf(GREEN_INK));
+        button.setBackground(roundStates(0x00000000, 0x2230523a, 100));
+        button.setOnClickListener(v -> {
+            clearError();
+            engine.sendPictureMode(night);
+        });
+        remoteButtons.add(button);
+        return button;
+    }
+
+    private void addWeightedIcon(LinearLayout row, ImageButton button, float weight) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, -1, weight);
+        params.leftMargin = dp(6);
+        params.rightMargin = dp(6);
+        row.addView(button, params);
+    }
+
+    private GradientDrawable roundFill(int color, int radius) {
+        GradientDrawable drawable = new GradientDrawable();
+        drawable.setColor(color);
+        drawable.setCornerRadius(dp(radius));
+        return drawable;
+    }
+
+    private StateListDrawable roundStates(int normal, int pressed, int radius) {
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[] {android.R.attr.state_pressed}, roundFill(pressed, radius));
+        GradientDrawable focused = roundFill(normal, radius);
+        focused.setStroke(dp(2), WHITE);
+        states.addState(new int[] {android.R.attr.state_focused}, focused);
+        states.addState(new int[0], roundFill(normal, radius));
+        return states;
     }
 
     private void showSetup() {
@@ -245,8 +277,27 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         TextView note = text("The TV will show a pairing code. Each phone pairs separately.", 13, MUTED);
         note.setPadding(0, dp(8), 0, 0);
         body.addView(note);
+        TextView modes = text("☀ Day / ☾ Night use the saved picture levels in BareHome on your TV. Install BareHome 1.1 or later and enable its picture controls. Input opens the TV’s source menu.", 13, MUTED);
+        modes.setPadding(0, dp(16), 0, dp(12));
+        body.addView(modes);
+        LinearLayout extras = row();
+        Button widget = button("Add widget", "Add a remote widget to your home screen");
+        widget.setOnClickListener(v -> { pendingSetup = false; dismissSetup(); addWidget(); });
+        extras.addView(widget, new LinearLayout.LayoutParams(0, dp(48), 1));
+        Button playback = button("Play / Pause", "Play or pause");
+        playback.setEnabled(engine.isPaired());
+        playback.setOnClickListener(v -> { clearError(); engine.sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE); });
+        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        playParams.leftMargin = dp(8);
+        extras.addView(playback, playParams);
+        body.addView(extras);
+        TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Hold OK in the app for a long press.", 12, MUTED);
+        widgetNote.setPadding(0, dp(10), 0, dp(4));
+        body.addView(widgetNote);
+        ScrollView setupScroll = new ScrollView(this);
+        setupScroll.addView(body);
         setupDialog = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Pair your TV").setView(body)
+                .setTitle("Setup").setView(setupScroll)
                 .setPositiveButton("Pair", null)
                 .setNegativeButton("Cancel", (dialog, which) -> pendingSetup = false)
                 .setNeutralButton("Forget TV", (dialog, which) -> {
@@ -480,13 +531,14 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     private void refreshTarget() {
         String host = safeHost();
-        targetText.setText(engine.isPaired() && !host.isEmpty() ? host : "No TV paired");
+        syncButton.setTooltipText(engine.isPaired() && !host.isEmpty()
+                ? "Sync: reconnect to " + host : "Pair a TV in Setup");
     }
 
     private String safeHost() { return engine.host() == null ? "" : engine.host(); }
 
     private void enableControls(boolean enabled) {
-        for (Button button : remoteButtons) {
+        for (View button : remoteButtons) {
             button.setEnabled(enabled);
             button.setAlpha(enabled ? 1f : .38f);
         }

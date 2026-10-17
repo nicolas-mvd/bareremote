@@ -19,6 +19,8 @@ import android.view.KeyEvent;
 public final class WidgetRemoteService extends Service {
     static final String ACTION_KEY = "uy.nico.bareremote.WIDGET_KEY";
     static final String ACTION_SYNC = "uy.nico.bareremote.WIDGET_SYNC";
+    static final String ACTION_PICTURE_MODE = "uy.nico.bareremote.WIDGET_PICTURE_MODE";
+    static final String EXTRA_NIGHT = "night";
     static final String ACTION_STOP = "uy.nico.bareremote.WIDGET_STOP";
     static final String EXTRA_KEY = "keycode";
     private static final String CHANNEL = "widget_remote";
@@ -28,6 +30,7 @@ public final class WidgetRemoteService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private RemoteEngine engine;
     private boolean sessionActive;
+    private boolean foregroundStarted;
     private long actionSequence;
     private long idleDeadline;
     private int latestStartId;
@@ -50,6 +53,11 @@ public final class WidgetRemoteService extends Service {
         return new Intent(context, WidgetRemoteService.class).setAction(ACTION_SYNC);
     }
 
+    static Intent pictureModeIntent(Context context, boolean night) {
+        return new Intent(context, WidgetRemoteService.class)
+                .setAction(ACTION_PICTURE_MODE).putExtra(EXTRA_NIGHT, night);
+    }
+
     @Override public void onCreate() {
         super.onCreate();
         NotificationChannel channel = new NotificationChannel(CHANNEL, "Widget remote session",
@@ -69,12 +77,17 @@ public final class WidgetRemoteService extends Service {
         // A widget PendingIntent starts this as a foreground service. Promote before
         // touching the engine; notification permission is not required for this call.
         try {
-            Notification notification = notification();
-            if (Build.VERSION.SDK_INT >= 29) {
-                startForeground(NOTIFICATION, notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
-            } else {
-                startForeground(NOTIFICATION, notification);
+            // Repeated taps keep the existing foreground session. Reposting the same
+            // notification for every key wastes binder work and hits system rate limits.
+            if (!foregroundStarted) {
+                Notification notification = notification();
+                if (Build.VERSION.SDK_INT >= 29) {
+                    startForeground(NOTIFICATION, notification,
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
+                } else {
+                    startForeground(NOTIFICATION, notification);
+                }
+                foregroundStarted = true;
             }
         } catch (RuntimeException denied) {
             endSession("Open app to connect");
@@ -83,7 +96,10 @@ public final class WidgetRemoteService extends Service {
 
         int key = intent == null ? KeyEvent.KEYCODE_UNKNOWN
                 : intent.getIntExtra(EXTRA_KEY, KeyEvent.KEYCODE_UNKNOWN);
-        if (!ACTION_SYNC.equals(action) && !(ACTION_KEY.equals(action) && RemoteWidget.supportedKey(key))) {
+        boolean pictureMode = ACTION_PICTURE_MODE.equals(action) && intent.hasExtra(EXTRA_NIGHT);
+        final boolean night = pictureMode && intent.getBooleanExtra(EXTRA_NIGHT, false);
+        if (!ACTION_SYNC.equals(action) && !pictureMode
+                && !(ACTION_KEY.equals(action) && RemoteWidget.supportedKey(key))) {
             endSession("Tap to connect");
             return START_NOT_STICKY;
         }
@@ -100,7 +116,8 @@ public final class WidgetRemoteService extends Service {
         main.postDelayed(idleStop, IDLE_MS);
         final long sequence = ++actionSequence;
         final boolean sync = ACTION_SYNC.equals(action);
-        RemoteWidget.updateAll(this, sync ? "Syncing…" : "Sending · " + RemoteWidget.keyLabel(key));
+        final String label = pictureMode ? night ? "Night" : "Day" : RemoteWidget.keyLabel(key);
+        RemoteWidget.updateAll(this, sync ? "Syncing…" : "Sending · " + label);
         RemoteEngine.Completion completion = error -> {
             if (!sessionActive || sequence != actionSequence) return;
             if (!engine.isPaired()) {
@@ -108,11 +125,12 @@ public final class WidgetRemoteService extends Service {
                 return;
             }
             RemoteWidget.updateAll(this, error == null
-                    ? sync ? "Connected" : "Sent · " + RemoteWidget.keyLabel(key)
-                    : "Sync to reconnect");
+                    ? sync ? "Connected" : pictureMode ? label + " requested" : "Sent · " + label
+                    : pictureMode ? "Day/Night unavailable · open app" : "Sync to reconnect");
         };
         try {
             if (sync) engine.reconnect(completion);
+            else if (pictureMode) engine.sendPictureMode(night, completion);
             else engine.sendWidgetKey(key, completion);
         } catch (RuntimeException failure) {
             completion.done("Could not send control");
@@ -151,6 +169,7 @@ public final class WidgetRemoteService extends Service {
         main.removeCallbacks(idleStop);
         if (engine != null) engine.setWidgetSessionActive(false);
         stopForeground(STOP_FOREGROUND_REMOVE);
+        foregroundStarted = false;
         RemoteWidget.updateAll(this, message);
         stopSelf(latestStartId);
     }
@@ -161,6 +180,7 @@ public final class WidgetRemoteService extends Service {
         main.removeCallbacks(idleStop);
         if (engine != null) engine.setWidgetSessionActive(false);
         stopForeground(STOP_FOREGROUND_REMOVE);
+        foregroundStarted = false;
         RemoteWidget.updateAll(this, endStatus == null ? "Tap to connect" : endStatus);
         super.onDestroy();
     }

@@ -1,29 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="widget_description">A full-page TV remote. Resize to fill your home screen.</string>
-    <style name="WidgetRemoteButton">
-        <item name="android:layout_width">0dp</item>
-        <item name="android:layout_height">match_parent</item>
-        <item name="android:layout_weight">1</item>
-        <item name="android:layout_margin">3dp</item>
+    <style name="WidgetRemoteIcon">
         <item name="android:minWidth">48dp</item>
         <item name="android:minHeight">48dp</item>
         <item name="android:background">@drawable/widget_button</item>
         <item name="android:backgroundTint">@null</item>
         <item name="android:stateListAnimator">@null</item>
-        <item name="android:textColor">#FFFFFFFF</item>
-        <item name="android:textSize">27sp</item>
-        <item name="android:fontFamily">sans-serif</item>
-        <item name="android:gravity">center</item>
+        <item name="android:scaleType">center</item>
         <item name="android:padding">0dp</item>
-        <item name="android:includeFontPadding">false</item>
-        <item name="android:textAllCaps">false</item>
-        <item name="android:maxLines">1</item>
-        <item name="android:ellipsize">end</item>
+        <item name="android:focusable">true</item>
     </style>
-    <style name="WidgetRemoteButton.Utility" parent="WidgetRemoteButton">
-        <item name="android:textColor">#FFB8B8B8</item>
-        <item name="android:textSize">14sp</item>
-        <item name="android:fontFamily">sans-serif-medium</item>
+    <style name="WidgetRemoteIcon.Mode" parent="WidgetRemoteIcon">
+        <item name="android:layout_width">48dp</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:tint">#FF153D25</item>
+        <item name="android:background">@drawable/widget_mode_touch</item>
+    </style>
+    <style name="WidgetRemoteIcon.Direction" parent="WidgetRemoteIcon">
+        <item name="android:tint">#FF8E9790</item>
+        <item name="android:background">@drawable/widget_direction_touch</item>
+    </style>
+    <style name="WidgetRemoteIcon.Bottom" parent="WidgetRemoteIcon">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">64dp</item>
+        <item name="android:layout_weight">1</item>
+        <item name="android:layout_marginLeft">4dp</item>
+        <item name="android:layout_marginRight">4dp</item>
+    </style>
+    <style name="WidgetRemoteIcon.Volume" parent="WidgetRemoteIcon.Bottom">
+        <item name="android:layout_height">52dp</item>
+        <item name="android:layout_weight">1.8</item>
+        <item name="android:layout_marginLeft">3dp</item>
+        <item name="android:layout_marginRight">3dp</item>
     </style>
 </resources>

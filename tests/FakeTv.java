@@ -179,6 +179,12 @@ public final class FakeTv {
                                     + " code=" + code + " direction=" + directionName + " at_ms=" + elapsedMs());
                         }
                     }, 250, TimeUnit.MILLISECONDS));
+                } else if (message.has(90)) {
+                    String link = new String(message.message(90).bytes(1), java.nio.charset.StandardCharsets.UTF_8);
+                    if (!link.equals("barehome://picture/day") && !link.equals("barehome://picture/night") && !link.equals("barehome://inputs")) {
+                        throw new IOException("Unexpected app link");
+                    }
+                    System.out.println("APP_LINK_REQUEST id=" + session + " uri=" + link + " at_ms=" + elapsedMs());
                 } else if (message.has(9)) {
                     long value = message.message(9).integer(1, 0);
                     if (value == 1) System.out.println("PING_OK id=" + session);

@@ -16,6 +16,7 @@ public final class EngineTest {
 
     public static void main(String[] args) throws Exception {
         burstAndOwnership();
+        pictureAndInputCommands();
         queuedTimeout();
         insufficientDeliveryBudget();
         syncCancelsOldCommands();
@@ -84,6 +85,29 @@ public final class EngineTest {
             check(connection.isOpen(), "widget stop preserves foreground-owned session");
             engine.pause();
             check(!connection.isOpen(), "last owner closes session");
+        } finally { shutdown(engine); }
+    }
+
+    private static void pictureAndInputCommands() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.setWidgetSessionActive(true);
+            List<String> results = new ArrayList<>();
+            engine.sendPictureMode(false, results::add);
+            engine.sendPictureMode(true, results::add);
+            engine.sendWidgetKey(178, results::add);
+            idle(engine);
+            check(TvProtocol.Remote.modes.equals(java.util.Arrays.asList(false, true)), "explicit Day then Night preserved");
+            check(TvProtocol.Remote.keys.isEmpty() && TvProtocol.Remote.inputs.size() == 1, "input uses one native-picker request, not a key macro");
+            check(TvProtocol.Remote.connections.size() == 1, "picture modes and input share session");
+            check(results.isEmpty(), "picture and input completion preserve delivery allowance");
+            Handler.advance(750);
+            check(results.size() == 3 && results.stream().allMatch(error -> error == null), "picture and input complete once");
+            CountDownLatch release = blockWorker(engine);
+            engine.sendPictureMode(true, results::add);
+            engine.setWidgetSessionActive(false);
+            release.countDown(); idle(engine);
+            check(TvProtocol.Remote.modes.size() == 2, "stopped widget cannot send stale picture request");
         } finally { shutdown(engine); }
     }
 

@@ -39,6 +39,7 @@ public final class ProtocolTest {
         testPairing(context, identity, pin);
         testPairingCancellation(context, identity);
         testRemote(context, identity, pin);
+        testPictureLinks(context, identity, pin);
         testInputRegistrationDelay(context, identity, pin);
         testDeferredDispatch(context, identity, pin);
         testDeliveryWaitCancellation(context, identity, pin);
@@ -57,6 +58,8 @@ public final class ProtocolTest {
         }
         equal(new Proto.Writer().message(10, new Proto.Writer().number(1, 23).number(2, 3)).build(),
                 hex("520408171003"), "short OK wire vector");
+        equal(new Proto.Writer().message(90, new Proto.Writer().text(1, "barehome://picture/day")).build(),
+                hex("d205180a1662617265686f6d653a2f2f706963747572652f646179"), "Day app-link wire vector");
         equal(new Proto.Writer().number(1, 2).number(2, 200)
                 .message(30, new Proto.Writer().message(1, new Proto.Writer().number(1, 3).number(2, 6))
                         .number(2, 1)).build(),
@@ -166,9 +169,9 @@ public final class ProtocolTest {
         Server server = new Server(context, new Session() {
             @Override public void run(SSLSocket socket) throws Exception {
                 write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 1023)));
-                check(read(socket).message(1).integer(1, 0) == 99, "minimal features negotiated");
+                check(read(socket).message(1).integer(1, 0) == 611, "keys and app links negotiated without IME or voice");
                 write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 1023)));
-                check(read(socket).message(2).integer(1, 0) == 99, "set active response");
+                check(read(socket).message(2).integer(1, 0) == 611, "set active response");
                 write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 0)));
                 check(read(socket).message(10).integer(2, 0) == 3, "short key sent after standby readiness");
                 write(socket, new Proto.Writer().message(8, new Proto.Writer().number(1, -1)));
@@ -209,6 +212,47 @@ public final class ProtocolTest {
         check(!remote.isOpen(), "remote notices disconnect");
         fails(new Action() { public void run() throws Exception { remote.sendKey(3); } }, "closed remote rejects command");
         remote.close();
+    }
+
+    private static void testPictureLinks(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        for (final boolean supported : new boolean[] {true, false}) {
+            final CountDownLatch received = new CountDownLatch(1);
+            Server server = new Server(context, new Session() {
+                @Override public void run(SSLSocket socket) throws Exception {
+                    write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, supported ? 611 : 99)));
+                    check(read(socket).message(1).integer(1, 0) == (supported ? 611 : 99), "app link feature intersection");
+                    write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, supported ? 611 : 99)));
+                    read(socket);
+                    write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
+                    if (supported) {
+                        equal(read(socket).message(90).bytes(1), "barehome://picture/day".getBytes("UTF-8"), "explicit Day link");
+                        equal(read(socket).message(90).bytes(1), "barehome://picture/night".getBytes("UTF-8"), "explicit Night link");
+                        equal(read(socket).message(90).bytes(1), "barehome://inputs".getBytes("UTF-8"), "native input picker link");
+                    }
+                    Proto.Message key = read(socket).message(10);
+                    check(key.integer(1, 0) == 178 && key.integer(2, 0) == 3, "input key works with or without app links");
+                    received.countDown();
+                }
+            });
+            TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+            try {
+                if (supported) {
+                    remote.sendPictureMode(false);
+                    remote.sendPictureMode(true);
+                    remote.sendInputPicker();
+                } else {
+                    try {
+                        remote.sendPictureMode(true);
+                        throw new AssertionError("unsupported link accepted");
+                    } catch (UnsupportedOperationException expected) {
+                        check(remote.isOpen(), "unsupported link sends nothing and keeps key session open");
+                    }
+                }
+                remote.sendKey(178);
+                check(received.await(2, TimeUnit.SECONDS), "picture/input commands received");
+                server.finish();
+            } finally { remote.close(); }
+        }
     }
 
     private static void testPairingCancellation(SSLContext context, TvProtocol.Identity identity) throws Exception {
