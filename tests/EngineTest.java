@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 /** Deterministic engine regression tests; no Android device or network access. */
 public final class EngineTest {
@@ -17,6 +19,12 @@ public final class EngineTest {
 
     public static void main(String[] args) throws Exception {
         burstAndOwnership();
+        repeatingKeysUseForegroundSession();
+        queuedReleaseCancelsRepeat();
+        repeatingKeysNeverReconnect();
+        repeatingSessionEndsAtSync();
+        repeatingKeysFollowForegroundLifetime();
+        lateRepeatCompletionCannotReportSuccessAfterPause();
         pictureAndInputCommands();
         confirmedPictureCallbacks();
         pictureCancellationAndOrdering();
@@ -234,6 +242,148 @@ public final class EngineTest {
             check(connection.isOpen(), "widget stop preserves foreground-owned session");
             engine.pause();
             check(!connection.isOpen(), "last owner closes session");
+        } finally { shutdown(engine); }
+    }
+
+    private static void repeatingKeysUseForegroundSession() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            BooleanSupplier session = engine.repeatingSession();
+            List<String> results = new ArrayList<>();
+            engine.sendRepeatingKey(21, session, results::add); idle(engine);
+            engine.sendRepeatingKey(21, session, results::add); idle(engine);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(21, 21)),
+                    "held app key sends repeated presses without widget ownership");
+            check(results.size() == 2 && results.stream().allMatch(error -> error == null),
+                    "app repeat completion is immediate without widget delivery allowance");
+            check(TvProtocol.Remote.connections.size() == 1,
+                    "repeated keys reuse the foreground connection");
+            TvProtocol.Remote connection = TvProtocol.Remote.connections.get(0);
+            Handler.advance(7000);
+            check(results.size() == 2 && connection.isOpen(),
+                    "completed repeats leave no active watchdog or duplicate completion");
+            engine.pause();
+            check(!connection.isOpen(), "repeat completion did not create a widget owner");
+        } finally { shutdown(engine); }
+    }
+
+    private static void queuedReleaseCancelsRepeat() throws Exception {
+        RemoteEngine engine = engine();
+        CountDownLatch release = null;
+        try {
+            engine.resume(); idle(engine);
+            BooleanSupplier session = engine.repeatingSession();
+            AtomicBoolean firstHeld = new AtomicBoolean(true);
+            List<String> old = new ArrayList<>(), next = new ArrayList<>();
+            release = blockWorker(engine);
+            engine.sendRepeatingKey(21, () -> firstHeld.get() && session.getAsBoolean(), old::add);
+            firstHeld.set(false);
+            AtomicBoolean nextHeld = new AtomicBoolean(true);
+            engine.sendRepeatingKey(22, () -> nextHeld.get() && session.getAsBoolean(), next::add);
+            release.countDown(); idle(engine);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)),
+                    "lifted queued repeat never sends or revives with a new gesture");
+            check(old.size() == 1 && "Control cancelled".equals(old.get(0)),
+                    "lifted queued repeat completes cancelled once");
+            check(next.size() == 1 && next.get(0) == null,
+                    "fresh gesture remains usable after the previous queued repeat is cancelled");
+            check(TvProtocol.Remote.connections.size() == 1 && TvProtocol.Remote.connections.get(0).isOpen(),
+                    "gesture cancellation preserves the shared connection");
+        } finally {
+            if (release != null) release.countDown();
+            shutdown(engine);
+        }
+    }
+
+    private static void repeatingKeysNeverReconnect() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            BooleanSupplier session = engine.repeatingSession();
+            TvProtocol.Remote.connections.get(0).close();
+            List<String> results = new ArrayList<>();
+            engine.sendRepeatingKey(21, session, results::add); idle(engine);
+            check(TvProtocol.Remote.connections.size() == 1 && TvProtocol.Remote.keys.isEmpty(),
+                    "repeat on a disconnected session does not reconnect or send");
+            check(results.size() == 1 && results.get(0) != null,
+                    "disconnected repeat reports one failure to stop the gesture");
+            engine.sendKey(22); idle(engine);
+            check(TvProtocol.Remote.connections.size() == 2
+                    && TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)),
+                    "a later deliberate tap may reconnect without replaying the failed repeat");
+        } finally { shutdown(engine); }
+    }
+
+    private static void repeatingSessionEndsAtSync() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            BooleanSupplier original = engine.repeatingSession();
+            TvProtocol.Remote first = TvProtocol.Remote.connections.get(0);
+            engine.reconnect(); idle(engine);
+            check(!original.getAsBoolean() && !first.isOpen(),
+                    "Sync invalidates a gesture even after the replacement is connected");
+            List<String> old = new ArrayList<>(), next = new ArrayList<>();
+            engine.sendRepeatingKey(21, original, old::add);
+            engine.sendRepeatingKey(22, engine.repeatingSession(), next::add);
+            idle(engine);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)),
+                    "original gesture cannot repeat into Sync's replacement session");
+            check(old.size() == 1 && "Control cancelled".equals(old.get(0))
+                    && next.size() == 1 && next.get(0) == null,
+                    "stale and new gestures complete independently after Sync");
+            check(TvProtocol.Remote.connections.size() == 2 && TvProtocol.Remote.connections.get(1).isOpen(),
+                    "stale repeat does not close or replace the new connection");
+        } finally { shutdown(engine); }
+    }
+
+    private static void repeatingKeysFollowForegroundLifetime() throws Exception {
+        RemoteEngine engine = engine();
+        CountDownLatch release = null;
+        try {
+            engine.resume(); idle(engine);
+            engine.setWidgetSessionActive(true);
+            TvProtocol.Remote connection = TvProtocol.Remote.connections.get(0);
+            BooleanSupplier original = engine.repeatingSession();
+            List<String> old = new ArrayList<>(), next = new ArrayList<>();
+            release = blockWorker(engine);
+            engine.sendRepeatingKey(21, original, old::add);
+            engine.pause();
+            check(!original.getAsBoolean() && connection.isOpen(),
+                    "foreground pause stops held gesture while widget keeps the connection");
+            engine.resume();
+            engine.sendRepeatingKey(22, engine.repeatingSession(), next::add);
+            release.countDown(); idle(engine);
+            check(!original.getAsBoolean() && TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)),
+                    "pause/resume cannot revive a queued repeat on the retained socket");
+            check(old.size() == 1 && "Control cancelled".equals(old.get(0))
+                    && next.size() == 1 && next.get(0) == null,
+                    "resumed foreground gesture works without reviving old app ownership");
+            check(TvProtocol.Remote.connections.size() == 1 && connection.isOpen(),
+                    "foreground repeat lifecycle leaves widget connection intact");
+        } finally {
+            if (release != null) release.countDown();
+            shutdown(engine);
+        }
+    }
+
+    private static void lateRepeatCompletionCannotReportSuccessAfterPause() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            engine.setWidgetSessionActive(true);
+            List<String> results = new ArrayList<>();
+            engine.sendRepeatingKey(21, engine.repeatingSession(), results::add);
+            // Finish the write without draining the main-thread completion queue.
+            worker(engine).submit(() -> {}).get(2, TimeUnit.SECONDS);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(21)) && results.isEmpty(),
+                    "repeat was written while its main-thread completion is still pending");
+            engine.pause(); engine.resume(); idle(engine);
+            check(results.size() == 1 && "Control cancelled".equals(results.get(0)),
+                    "late repeat callback cannot report success for an old foreground lifetime");
+            check(TvProtocol.Remote.connections.size() == 1 && TvProtocol.Remote.connections.get(0).isOpen(),
+                    "late cancelled callback preserves the retained session");
         } finally { shutdown(engine); }
     }
 

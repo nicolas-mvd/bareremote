@@ -11,7 +11,7 @@ Open the gear (Setup), then **Check for updates**. Checking is manual; the widge
 3. Confirm the update in Android's installer. You can cancel instead. The app never silently installs or reboots the device.
 
 Updates install over the existing app. Do not uninstall first: uninstalling removes the app's local data. Pairing and widget configuration remain in place during normal updates. Open BareRemote once after updating. **Exception:** upgrading from 0.4.0 or earlier
-to 0.4.1 requires one new TV-code pairing on each phone to fix the shared
+to 0.4.1 or newer requires one new TV-code pairing on each phone to fix the shared
 certificate-name bug. The saved TV address and widgets are retained.
 
 Network errors leave the existing app usable. A failed check is not reported as “up to date.” Downloading requires an explicit tap and can be cancelled by leaving the update screen. Manufacturer restrictions can prevent the standard Android installer from opening; the GitHub APK and ADB installation remain available.

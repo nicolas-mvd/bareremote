@@ -167,6 +167,7 @@ public final class RemoteWidget extends AppWidgetProvider {
     private static void setStatus(RemoteViews views, String message) {
         views.setContentDescription(R.id.widget_header,
                 "BareRemote. " + message + ". Open remote and connection settings.");
+        views.setContentDescription(R.id.widget_open_app, "Open BareRemote app. " + message);
         views.setContentDescription(R.id.widget_sync, "Sync: reconnect to TV. " + message);
     }
 
@@ -213,6 +214,7 @@ public final class RemoteWidget extends AppWidgetProvider {
         PendingIntent openApp = PendingIntent.getActivity(context, 0, open,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
         views.setOnClickPendingIntent(R.id.widget_header, openApp);
+        views.setOnClickPendingIntent(R.id.widget_open_app, openApp);
         PendingIntent sync = paired ? PendingIntent.getForegroundService(context, 1001,
                 WidgetRemoteService.syncIntent(context),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE) : openApp;

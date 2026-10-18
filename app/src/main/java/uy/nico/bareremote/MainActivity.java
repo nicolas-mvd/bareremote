@@ -30,6 +30,7 @@ import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.function.BooleanSupplier;
 
 /** A remote, immediately. No content feed, accounts, or background UI work. */
 public final class MainActivity extends Activity implements RemoteEngine.Listener {
@@ -39,6 +40,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private static final int GREEN_INK = 0xff153d25;
     private static final int MUTED = 0xffaaaaaa;
     private final List<View> remoteButtons = new ArrayList<>();
+    private final List<RepeatingKeyTouchListener> repeatingButtons = new ArrayList<>();
     private RemoteEngine engine;
     private TextView stateText;
     private TextView errorText;
@@ -202,8 +204,28 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private ImageButton keyIcon(int resource, String description, int key) {
         ImageButton button = icon(resource, description);
         button.setOnClickListener(v -> { clearError(); engine.sendKey(key); });
+        if (key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN
+                || key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT
+                || key == KeyEvent.KEYCODE_VOLUME_UP || key == KeyEvent.KEYCODE_VOLUME_DOWN) {
+            button.setContentDescription(description + ". Touch and hold to repeat");
+            repeatingButtons.add(new RepeatingKeyTouchListener(button,
+                    () -> {
+                        BooleanSupplier session = engine.repeatingSession();
+                        return (held, completion) -> engine.sendRepeatingKey(key,
+                                () -> held.getAsBoolean() && session.getAsBoolean(), completion);
+                    }, this::onError));
+        }
         remoteButtons.add(button);
         return button;
+    }
+
+    private void cancelRepeatingButtons() {
+        for (RepeatingKeyTouchListener button : repeatingButtons) button.cancel();
+    }
+
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (!hasFocus) cancelRepeatingButtons();
     }
 
     private ImageButton createModeButton() {
@@ -302,7 +324,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         playParams.leftMargin = dp(8);
         extras.addView(playback, playParams);
         body.addView(extras);
-        TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Hold OK in the app for a long press.", 12, MUTED);
+        TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Open the app to hold directions or volume for repeated presses, or OK for a long press.", 12, MUTED);
         widgetNote.setPadding(0, dp(10), 0, dp(4));
         body.addView(widgetNote);
         Button updates = button("Check for updates", "Check for a BareRemote update");
@@ -471,6 +493,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     @Override protected void onPause() {
         resumed = false;
+        cancelRepeatingButtons();
         if (pairingInProgress || pendingCode) {
             pairingInterrupted = true;
             pairingInProgress = false;
@@ -531,6 +554,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     @Override public void onError(String message) {
+        cancelRepeatingButtons();
         pairingInProgress = false;
         refreshSync();
         stateText.setText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
@@ -575,6 +599,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     private void enableControls(boolean enabled) {
+        if (!enabled) cancelRepeatingButtons();
         for (View button : remoteButtons) {
             button.setEnabled(enabled);
             button.setAlpha(enabled ? 1f : .38f);

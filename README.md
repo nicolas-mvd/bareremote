@@ -2,15 +2,15 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.4.1.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.4.2.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.1-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.2-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.2-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
-**Upgrading?** Install over the existing app. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
+**Upgrading?** Install over the existing app. Updating from 0.4.1 to 0.4.2 keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup**, enter the TV’s IPv4 address, and tap **Pair**. Find the address in the TV’s network settings.
@@ -18,7 +18,7 @@ A small Android TV remote for your phone. Open it, press a button. Or give its w
 
 The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, pair again in Setup with its new address. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
 
-Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Hold **OK** in the app for a long press, including BareHome’s mode editor. Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
+Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. Hold a **direction or volume button** in the app to repeat presses: the first press sends immediately, then repetition starts after 400 ms, up to roughly eight presses per second. Releasing, dragging off the pad or volume button, leaving the app, or a connection error stops repetition. A held button never reconnects automatically after a failure. Hold **OK** for a long press, including BareHome’s mode editor. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
 
 If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
 
@@ -63,13 +63,13 @@ The hardware, permission, automatic-lighting and native Picture-mode guards rema
 
 Tap **Add widget** in the app and accept your launcher’s prompt. Alternatively, touch and hold an empty home-screen area → **Widgets** → **BareRemote**.
 
-The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The gear opens the app; Sync reconnects and checks picture state; its control buttons send commands directly. Pair once in the app first.
+The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The **BareRemote logo beside mute opens the full remote**, including hold-to-repeat controls. The gear also opens the app; Sync reconnects and checks picture state; its control buttons send commands directly. Pair once in the app first.
 
 The first tap opens a connection. Further taps reuse it for faster navigation, and each tap resets a **60-second idle timer**. A temporary Android foreground service keeps this session alive, with a notification containing **Stop**. It ends automatically after a minute without taps. The app can keep its own connection while open.
 
 On Android 13+, BareRemote asks once for notification permission after opening the paired app. This permission is optional: the widget still works if you decline, and Android still shows the foreground service in its Active apps/Task Manager view.
 
-The widget uses icons only, with no title or connection-status text row. TalkBack still announces control names and connection status. The gear opens the app for setup or errors. A brief TV startup wait remains, but the delay after sending does not hold up later commands. Long-OK is app-only because home-screen launchers reserve widget long presses for moving and resizing.
+The widget uses icons only, with no title or connection-status text row. TalkBack still announces control names and connection status. The gear opens the app for setup or errors. A brief TV startup wait remains, but the delay after sending does not hold up later commands. Hold-to-repeat and long-OK are app-only because home-screen launchers reserve widget long presses for moving and resizing.
 
 ## Build
 
@@ -157,3 +157,15 @@ without another pairing code. The TV's per-client input counters and ping replie
 confirmed the separate live connections. No apps were launched or picture levels
 changed, and the test sessions were closed afterward. This tests the actual TV
 with emulator clients; confirmation on two physical phones is still pending.
+
+Version **0.4.2** adds app hold-to-repeat for directions and volume,
+plus a widget button to open the app. Six host suites pass **605 assertions**,
+including release/gesture cancellation, bounded repeat scheduling, stale callbacks,
+foreground ownership, and stopping across Sync or connection failure. The signed
+APK on an Android 15 emulator paired with the loopback simulated TV delivered
+10–11 presses per 1.5-second hold for each of the six repeatable controls, stopped
+after release, delivered a short tap once, and preserved OK’s long press. A native
+Android widget host at 288 × 476 dp verified widget rendering and that its new
+app button launches the remote. The emulator launcher rejected the existing
+full-page minimum size, so this does not validate launcher pinning. These
+are emulator/mock results; 0.4.2 has not been tested on a physical phone or TV.

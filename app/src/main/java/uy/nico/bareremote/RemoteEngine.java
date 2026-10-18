@@ -19,6 +19,7 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 
 /** Shared connection while the activity or a bounded widget service session owns it. */
 final class RemoteEngine {
@@ -300,6 +301,14 @@ final class RemoteEngine {
     }
 
     void sendKey(int key) { command(key, false, null); }
+    BooleanSupplier repeatingSession() {
+        final int token = generation.get();
+        final int foregroundToken = foregroundGeneration.get();
+        return () -> foreground && current(token) && foregroundGeneration.get() == foregroundToken;
+    }
+    void sendRepeatingKey(int key, BooleanSupplier held, Completion completion) {
+        command(key, false, null, completion, false, held);
+    }
     void sendLongKey(int key) { command(key, true, null); }
     void sendWidgetKey(int key, Completion completion) { command(key, false, completion); }
 
@@ -445,17 +454,29 @@ final class RemoteEngine {
     }
 
     private void command(int key, boolean longPress, Boolean pictureNight, Completion completion) {
+        command(key, longPress, pictureNight, completion, completion != null, null);
+    }
+
+    private void command(int key, boolean longPress, Boolean pictureNight, Completion completion,
+            boolean widgetOwner, BooleanSupplier held) {
         if (pictureNight == null && !allowedKey(key)) { finish(completion, "Unknown control"); return; }
         if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
         if (pairingBusy) { finish(completion, "Finish pairing in the app first"); return; }
-        final Operation operation = new Operation(generation.get(), completion);
+        final Operation operation = new Operation(generation.get(), completion, widgetOwner, held);
         startTimeout(operation);
         execute(() -> {
             TvProtocol.Remote connection = null;
             boolean writeAttempted = false;
             try {
                 if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
-                connection = connect(operation.token);
+                if (held == null) connection = connect(operation.token);
+                else {
+                    // A held button continues a live session. A lost connection
+                    // stops the gesture; it must never reconnect and replay repeats.
+                    synchronized (connectionLock) { connection = remote; }
+                    if (connection == null || !connection.isOpen())
+                        throw new IOException("TV disconnected. Tap Sync to reconnect.");
+                }
                 synchronized (connectionLock) {
                     if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
                     long required = TvProtocol.DELIVERY_WINDOW_MS;
@@ -473,7 +494,7 @@ final class RemoteEngine {
                 else if (longPress) connection.sendLongKey(key); else connection.sendKey(key);
                 synchronized (connectionLock) { operation.writing = null; }
                 if (pictureNight != null) pictureRequest(false, null, operation.widgetToken != -1, true);
-                if (completion == null) {
+                if (!widgetOwner) {
                     complete(operation, null);
                 } else {
                     final TvProtocol.Remote sentConnection = connection;
@@ -501,6 +522,7 @@ final class RemoteEngine {
         final Completion completion;
         final int widgetToken;
         final int foregroundToken;
+        final BooleanSupplier held;
         final long deadline = SystemClock.elapsedRealtime() + 7000;
         final AtomicBoolean completed = new AtomicBoolean();
         // Guarded by connectionLock. Non-null only while this operation writes.
@@ -508,10 +530,14 @@ final class RemoteEngine {
         Runnable timeout;
         Operation(int token, Completion completion) { this(token, completion, completion != null); }
         Operation(int token, Completion completion, boolean widgetOwner) {
+            this(token, completion, widgetOwner, null);
+        }
+        Operation(int token, Completion completion, boolean widgetOwner, BooleanSupplier held) {
             this.token = token;
             this.completion = completion;
             this.widgetToken = widgetOwner ? widgetGeneration.get() : -1;
             this.foregroundToken = widgetOwner ? -1 : foregroundGeneration.get();
+            this.held = held;
         }
     }
 
@@ -534,7 +560,8 @@ final class RemoteEngine {
 
     private boolean canRun(Operation operation) throws SocketTimeoutException {
         boolean ownerActive = operation.widgetToken == -1 ? foreground : widgetSessionActive;
-        if (operation.completed.get() || !current(operation) || !ownerActive || pairingBusy) return false;
+        if (operation.completed.get() || !current(operation) || !ownerActive || pairingBusy
+                || (operation.held != null && !operation.held.getAsBoolean())) return false;
         if (SystemClock.elapsedRealtime() >= operation.deadline) throw new SocketTimeoutException("Command expired");
         return true;
     }
@@ -636,7 +663,8 @@ final class RemoteEngine {
     private void finish(Completion completion, String error, int token, int widgetToken, int foregroundToken, boolean sentState) {
         main.post(() -> {
             if (completion != null) {
-                boolean valid = current(token) && (widgetToken == -1 || widgetGeneration.get() == widgetToken);
+                boolean valid = current(token) && (widgetToken == -1 || widgetGeneration.get() == widgetToken)
+                        && (foregroundToken == -1 || foregroundGeneration.get() == foregroundToken);
                 completion.done(valid ? error : "Control cancelled");
             }
             else if (current(token) && (foregroundToken == -1 || foregroundGeneration.get() == foregroundToken)
