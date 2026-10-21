@@ -1,7 +1,7 @@
 {
-  "versionCode": 8,
-  "versionName": "0.4.2-prototype",
-  "apkUrl": "https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.2-prototype/BareRemote.apk",
-  "sha256": "25efe2fb91cdbb0528d2a79ec8783e21f1975764d817b292d21ac6273c03bccb",
-  "size": 170681
+  "versionCode": 9,
+  "versionName": "0.5.0-prototype",
+  "apkUrl": "https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.0-prototype/BareRemote.apk",
+  "sha256": "cef785ba7e07d098561490104b0ed18093b1f91c3503767caf7bd1d0ae79e627",
+  "size": 187065
 }
