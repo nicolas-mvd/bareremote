@@ -153,14 +153,29 @@ final class TvProtocol {
         static final java.util.List<String> inputs = new CopyOnWriteArrayList<>();
         static volatile CountDownLatch connectGate, connectEntered, writeEntered;
         static volatile boolean blockWrite, holdPictureReplies, unsupportedPicture;
+        static volatile String failHost, pinRejectHost;
         static final java.util.List<PictureStateClient> pictureRequests = new CopyOnWriteArrayList<>();
         static final java.util.List<Boolean> pictureToggles = new CopyOnWriteArrayList<>();
         volatile boolean open=true;
+        final String host;
+        final int port;
+        final byte[] pin;
+        final PhoneIdentity identity;
         final CountDownLatch closed = new CountDownLatch(1);
+        Remote(String host,int port,byte[] pin,PhoneIdentity identity) {
+            this.host=host; this.port=port; this.pin=pin.clone(); this.identity=identity;
+        }
         static Remote connect(String host,int port,byte[] pin,PhoneIdentity identity) throws Exception {
-            Remote next=new Remote(); connections.add(next);
+            Remote next=new Remote(host,port,pin,identity); connections.add(next);
             CountDownLatch gate=connectGate; connectGate=null;
             if (gate!=null) { connectEntered.countDown(); gate.await(); }
+            // Model adapter failures only. The protocol suite separately exercises
+            // the real mutual-TLS certificate pin on loopback sockets.
+            if (host.equals(failHost) || host.equals(pinRejectHost)) {
+                next.close();
+                throw new java.io.IOException(host.equals(pinRejectHost)
+                        ? "TV certificate changed. Pair again in Setup." : "Connection refused");
+            }
             return next;
         }
         boolean isOpen() { return open; }
@@ -181,7 +196,7 @@ final class TvProtocol {
         }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; }
+        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
     }
 }
 """,

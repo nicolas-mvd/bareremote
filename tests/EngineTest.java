@@ -41,6 +41,17 @@ public final class EngineTest {
         identityUpgradeFailuresAndCancellation();
         identityUpgradeSavedOnlyOnSuccess();
         freshIdentityPairing();
+        changedAddressKeepsPairing();
+        changedAddressFailuresKeepTrust();
+        changedAddressPersistenceFailure();
+        changedAddressValidationAndMigration();
+        changedAddressCancellation();
+        changedAddressMainThreadCancellation();
+        changedAddressDisconnectedBeforeSave();
+        changedAddressSuperseded();
+        changedAddressDeadlines();
+        changedAddressRejectsConcurrentControls();
+        changedAddressCancelsOldCommands();
         System.out.println("Engine tests: " + assertions + " assertions passed");
     }
 
@@ -185,6 +196,338 @@ public final class EngineTest {
             engine.finishPairing("ABC123"); idle(engine); idle(engine);
             check(engine.isPaired() && !engine.needsPairingUpgrade(), "fresh explicit pairing is immediately usable");
         } finally { shutdown(engine); }
+    }
+
+    private static void savedTrust(Context context, String expectedHost, String message) {
+        SharedPreferences prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE);
+        check(expectedHost.equals(prefs.getString("host", ""))
+                && "AQ==".equals(prefs.getString("certificate", ""))
+                && prefs.getInt("pairing_identity_version", 0) == PhoneIdentity.VERSION, message);
+    }
+
+    private static void noReconnectCommands(String message) {
+        check(TvProtocol.Pairing.starts == 0 && TvProtocol.Pairing.finishes == 0
+                && TvProtocol.Remote.keys.isEmpty() && TvProtocol.Remote.inputs.isEmpty()
+                && TvProtocol.Remote.modes.isEmpty() && TvProtocol.Remote.pictureToggles.isEmpty(), message);
+    }
+
+    private static CountDownLatch gateNextConnection() {
+        CountDownLatch release = new CountDownLatch(1);
+        TvProtocol.Remote.connectGate = release;
+        TvProtocol.Remote.connectEntered = new CountDownLatch(1);
+        return release;
+    }
+
+    private static void changedAddressKeepsPairing() throws Exception {
+        Context context = new Context();
+        RemoteEngine engine = engine(context);
+        CountDownLatch release = null;
+        try {
+            TvProtocol.Remote.holdPictureReplies = true;
+            engine.resume(); idle(engine); idle(engine);
+            TvProtocol.Remote original = TvProtocol.Remote.connections.get(0);
+            PictureStateClient oldPicture = TvProtocol.Remote.pictureRequests.get(0);
+            TvProtocol.Remote.pictureRequests.clear(); TvProtocol.Remote.pictureToggles.clear();
+            List<String> result = new ArrayList<>();
+            release = gateNextConnection();
+            engine.reconnectTo(" 192.000.002.009 ", result::add);
+            check(TvProtocol.Remote.connectEntered.await(2, TimeUnit.SECONDS), "changed address begins pinned readiness check");
+            check(engine.isReconnectingTo() && !original.isOpen() && oldPicture.closed,
+                    "checking new address ends old session and callback listener");
+            savedTrust(context, "192.0.2.1", "candidate is not saved before authenticated readiness");
+            TvProtocol.Remote candidate = TvProtocol.Remote.connections.get(1);
+            check("192.0.2.9".equals(candidate.host) && candidate.port == 6466
+                    && java.util.Arrays.equals(original.pin, candidate.pin) && candidate.identity == original.identity,
+                    "canonical new IPv4 uses saved certificate and the same phone identity on remote port");
+            release.countDown(); idle(engine);
+            check(!engine.isReconnectingTo() && "192.0.2.9".equals(engine.host()) && engine.isPaired()
+                    && candidate.isOpen(), "authenticated candidate becomes the retained connected TV");
+            check(result.size() == 1 && result.get(0) == null, "changed address completes successfully once");
+            savedTrust(context, "192.0.2.9", "new address saves without replacing certificate or identity version");
+            check("unknown".equals(engine.pictureState()) && TvProtocol.Remote.pictureRequests.isEmpty(),
+                    "changed address clears scoped picture state without sending a new app link");
+            noReconnectCommands("reconnecting sends no keys, pairing requests, toggles or input links");
+            engine.sendKey(22); idle(engine);
+            check(TvProtocol.Remote.connections.size() == 2 && TvProtocol.Remote.keys.equals(java.util.Arrays.asList(22)),
+                    "next explicit key reuses the newly verified socket once");
+            List<String> same = new ArrayList<>();
+            engine.reconnectTo("192.0.2.9", same::add); idle(engine);
+            check(same.size() == 1 && same.get(0) == null && TvProtocol.Remote.connections.size() == 3
+                    && !candidate.isOpen() && TvProtocol.Remote.connections.get(2).isOpen(),
+                    "selecting saved address still performs a fresh pinned reconnect without a code");
+        } finally { if (release != null) release.countDown(); shutdown(engine); }
+        RemoteEngine restarted = engine(context);
+        try {
+            check(restarted.isPaired() && "192.0.2.9".equals(restarted.host()),
+                    "new address and pairing survive process recreation");
+            restarted.resume(); idle(restarted); idle(restarted);
+            check(TvProtocol.Remote.connections.size() == 1
+                    && "192.0.2.9".equals(TvProtocol.Remote.connections.get(0).host)
+                    && java.util.Arrays.equals(new byte[]{1}, TvProtocol.Remote.connections.get(0).pin)
+                    && TvProtocol.Pairing.starts == 0, "restart reconnects at new address with saved pin and no TV code");
+        } finally { shutdown(restarted); }
+    }
+
+    private static void changedAddressFailuresKeepTrust() throws Exception {
+        for (int scenario = 0; scenario < 2; scenario++) {
+            Context context = new Context();
+            RemoteEngine engine = engine(context);
+            try {
+                engine.resume(); idle(engine); idle(engine);
+                if (scenario == 0) TvProtocol.Remote.failHost = "192.0.2.9";
+                else TvProtocol.Remote.pinRejectHost = "192.0.2.9";
+                List<String> result = new ArrayList<>();
+                engine.reconnectTo("192.0.2.9", result::add); idle(engine);
+                check(result.size() == 1 && result.get(0) != null && !engine.isReconnectingTo(),
+                        "unreachable or adapter-rejected candidate reports failure once " + scenario);
+                check(engine.isPaired() && "192.0.2.1".equals(engine.host()),
+                        "failed candidate retains usable saved pairing " + scenario);
+                savedTrust(context, "192.0.2.1", "failed candidate never changes persisted trust " + scenario);
+                check(!TvProtocol.Remote.connections.get(1).isOpen(), "failed candidate socket closes " + scenario);
+                check(TvProtocol.Pairing.starts == 0 && TvProtocol.Pairing.finishes == 0
+                        && TvProtocol.Remote.keys.isEmpty(), "failure never falls back to pairing or replays a key " + scenario);
+                engine.setWidgetSessionActive(true);
+                engine.reconnect(result::add); idle(engine);
+                check(result.size() == 2 && result.get(1) == null
+                        && "192.0.2.1".equals(TvProtocol.Remote.connections.get(2).host),
+                        "later explicit Sync still uses original address after failed candidate " + scenario);
+            } finally { shutdown(engine); }
+        }
+    }
+
+    private static void changedAddressPersistenceFailure() throws Exception {
+        Context context = new Context();
+        RemoteEngine engine = engine(context);
+        try {
+            engine.resume(); idle(engine); idle(engine);
+            context.getSharedPreferences("remote", Context.MODE_PRIVATE).failNextCommit = true;
+            List<String> result = new ArrayList<>();
+            engine.reconnectTo("192.0.2.9", result::add); idle(engine);
+            check(result.size() == 1 && result.get(0) != null && !engine.isReconnectingTo(),
+                    "failed address commit reports failure once");
+            check(engine.isPaired() && "192.0.2.1".equals(engine.host())
+                    && !TvProtocol.Remote.connections.get(1).isOpen(), "failed save discards candidate and retains original engine trust");
+            savedTrust(context, "192.0.2.1", "failed disk commit rolls SharedPreferences in-memory map back to original trust");
+            check(TvProtocol.Pairing.starts == 0 && TvProtocol.Remote.keys.isEmpty(), "failed save sends no pairing or keys");
+        } finally { shutdown(engine); }
+        RemoteEngine restarted = engine(context);
+        try { check(restarted.isPaired() && "192.0.2.1".equals(restarted.host()), "restart after failed save uses original pairing"); }
+        finally { shutdown(restarted); }
+    }
+
+    private static void changedAddressValidationAndMigration() throws Exception {
+        Context context = new Context();
+        RemoteEngine engine = engine(context);
+        try {
+            engine.resume(); idle(engine); idle(engine);
+            TvProtocol.Remote original = TvProtocol.Remote.connections.get(0);
+            List<String> errors = new ArrayList<>();
+            for (String address : new String[]{null, "tv.local", "192.0.2.999", "0.0.0.0", "224.0.0.1", "::1"}) {
+                engine.reconnectTo(address, errors::add); Handler.drain();
+            }
+            check(errors.size() == 6 && errors.stream().allMatch(value -> value != null), "invalid or nonnumeric candidates fail before networking");
+            check(TvProtocol.Remote.connections.size() == 1 && original.isOpen() && !engine.isReconnectingTo(),
+                    "invalid candidate does not disturb existing session");
+            savedTrust(context, "192.0.2.1", "invalid candidates preserve saved trust");
+            engine.pause();
+            engine.reconnectTo("192.0.2.9", errors::add); idle(engine);
+            check(errors.size() == 7 && errors.get(6) != null && TvProtocol.Remote.connections.size() == 1,
+                    "address checks require a foreground owner even when completion exists");
+        } finally { shutdown(engine); }
+        for (int scenario = 0; scenario < 2; scenario++) {
+            Context unavailable = legacyContext();
+            if (scenario == 1) unavailable.getSharedPreferences("remote", Context.MODE_PRIVATE).edit()
+                    .remove("host").remove("certificate").apply();
+            RemoteEngine unpaired = engine(unavailable);
+            try {
+                unpaired.resume(); idle(unpaired);
+                List<String> errors = new ArrayList<>();
+                unpaired.reconnectTo("192.0.2.9", errors::add); idle(unpaired);
+                check(errors.size() == 1 && errors.get(0) != null && !unpaired.isReconnectingTo(),
+                        "unpaired or legacy identity cannot use address recovery " + scenario);
+                check(TvProtocol.Remote.connections.isEmpty() && TvProtocol.Pairing.starts == 0,
+                        "recovery cannot bypass required explicit pairing " + scenario);
+            } finally { shutdown(unpaired); }
+        }
+    }
+
+    private static void changedAddressCancellation() throws Exception {
+        for (int scenario = 0; scenario < 4; scenario++) {
+            Context context = new Context();
+            RemoteEngine engine = engine(context);
+            CountDownLatch release = null;
+            try {
+                engine.resume(); idle(engine); idle(engine);
+                // A widget owner must not keep an Activity-initiated address check alive.
+                engine.setWidgetSessionActive(true);
+                List<String> result = new ArrayList<>();
+                release = gateNextConnection();
+                engine.reconnectTo("192.0.2.9", result::add);
+                check(TvProtocol.Remote.connectEntered.await(2, TimeUnit.SECONDS), "cancellable address check entered " + scenario);
+                if (scenario == 0) engine.cancelReconnectTo();
+                else if (scenario == 1) { engine.pause(); engine.resume(); }
+                else if (scenario == 2) engine.forget();
+                else engine.startPairing("192.0.2.8");
+                release.countDown(); idle(engine); idle(engine);
+                check(result.size() == 1 && "Control cancelled".equals(result.get(0)) && !engine.isReconnectingTo(),
+                        "cancel, pause, Forget or new pairing ends check once " + scenario);
+                check(!TvProtocol.Remote.connections.get(1).isOpen(), "late candidate after cancellation is discarded " + scenario);
+                check(TvProtocol.Remote.keys.isEmpty(), "cancelled address check never replays a key " + scenario);
+                if (scenario == 2) {
+                    check(!engine.hasSavedTv()
+                            && context.getSharedPreferences("remote", Context.MODE_PRIVATE).getString("host", "").isEmpty(),
+                            "Forget cannot be undone by late successful candidate");
+                } else savedTrust(context, "192.0.2.1", "cancelled candidate cannot replace saved trust " + scenario);
+                check(TvProtocol.Pairing.starts == (scenario == 3 ? 1 : 0),
+                        "only explicit new Pair action can request a code " + scenario);
+            } finally { if (release != null) release.countDown(); shutdown(engine); }
+        }
+    }
+
+    private static void changedAddressMainThreadCancellation() throws Exception {
+        for (int scenario = 0; scenario < 3; scenario++) {
+            Context context = new Context();
+            RemoteEngine engine = engine(context);
+            try {
+                engine.resume(); idle(engine); idle(engine);
+                List<String> result = new ArrayList<>();
+                engine.reconnectTo("192.0.2.9", result::add);
+                // Authentication has returned, but its main-thread save has not run.
+                worker(engine).submit(() -> {}).get(2, TimeUnit.SECONDS);
+                savedTrust(context, "192.0.2.1", "worker readiness cannot directly save candidate " + scenario);
+                if (scenario == 0) engine.cancelReconnectTo();
+                else if (scenario == 1) engine.pause();
+                else engine.forget();
+                Handler.drain(); idle(engine);
+                check(result.size() == 1 && "Control cancelled".equals(result.get(0))
+                        && !TvProtocol.Remote.connections.get(1).isOpen(),
+                        "pending main-thread commit cannot outlive cancel, pause or Forget " + scenario);
+                if (scenario < 2) savedTrust(context, "192.0.2.1", "stale main-thread success preserves original trust " + scenario);
+                else check(!engine.hasSavedTv(), "stale main-thread success cannot undo Forget");
+            } finally { shutdown(engine); }
+        }
+    }
+
+    private static void changedAddressDisconnectedBeforeSave() throws Exception {
+        Context context = new Context();
+        RemoteEngine engine = engine(context);
+        try {
+            engine.resume(); idle(engine); idle(engine);
+            List<String> result = new ArrayList<>();
+            engine.reconnectTo("192.0.2.9", result::add);
+            worker(engine).submit(() -> {}).get(2, TimeUnit.SECONDS);
+            TvProtocol.Remote.connections.get(1).close();
+            Handler.drain(); idle(engine);
+            check(result.size() == 1 && result.get(0) != null && !engine.isReconnectingTo(),
+                    "candidate disconnected before main-thread save cannot report success");
+            savedTrust(context, "192.0.2.1", "disconnected candidate cannot replace persisted address");
+            check(engine.isPaired() && "192.0.2.1".equals(engine.host()), "disconnected candidate preserves original engine pairing");
+        } finally { shutdown(engine); }
+    }
+
+    private static void changedAddressSuperseded() throws Exception {
+        Context context = new Context();
+        RemoteEngine engine = engine(context);
+        CountDownLatch release = null;
+        try {
+            engine.resume(); idle(engine); idle(engine);
+            List<String> first = new ArrayList<>(), second = new ArrayList<>();
+            release = gateNextConnection();
+            engine.reconnectTo("192.0.2.8", first::add);
+            check(TvProtocol.Remote.connectEntered.await(2, TimeUnit.SECONDS), "first candidate check entered");
+            engine.reconnectTo("192.0.2.9", second::add);
+            release.countDown(); idle(engine); idle(engine);
+            check(first.size() == 1 && "Control cancelled".equals(first.get(0))
+                    && second.size() == 1 && second.get(0) == null, "latest selected address completes independently of superseded check");
+            check(!TvProtocol.Remote.connections.get(1).isOpen() && TvProtocol.Remote.connections.get(2).isOpen()
+                    && "192.0.2.9".equals(engine.host()), "stale candidate cannot close or replace latest verified session");
+            savedTrust(context, "192.0.2.9", "only latest candidate is persisted");
+            Handler.advance(7000); idle(engine);
+            check(first.size() == 1 && second.size() == 1 && TvProtocol.Remote.connections.get(2).isOpen(),
+                    "old deadlines cannot finish twice or close replacement");
+        } finally { if (release != null) release.countDown(); shutdown(engine); }
+    }
+
+    private static void changedAddressDeadlines() throws Exception {
+        for (int scenario = 0; scenario < 2; scenario++) {
+            Context context = new Context();
+            RemoteEngine engine = engine(context);
+            CountDownLatch release = null;
+            try {
+                engine.resume(); idle(engine); idle(engine);
+                List<String> result = new ArrayList<>();
+                if (scenario == 0) release = blockWorker(engine);
+                else release = gateNextConnection();
+                engine.reconnectTo("192.0.2.9", result::add);
+                if (scenario == 1) check(TvProtocol.Remote.connectEntered.await(2, TimeUnit.SECONDS), "timed address check entered");
+                Handler.advance(6999);
+                check(result.isEmpty() && engine.isReconnectingTo(), "address check keeps its full bounded deadline " + scenario);
+                Handler.advance(1);
+                check(result.size() == 1 && result.get(0) != null && !engine.isReconnectingTo(), "address check expires once at deadline " + scenario);
+                savedTrust(context, "192.0.2.1", "timeout cannot save candidate " + scenario);
+                release.countDown(); idle(engine);
+                check(result.size() == 1 && "192.0.2.1".equals(engine.host()), "late worker result cannot bypass timeout " + scenario);
+                check(TvProtocol.Remote.connections.size() == (scenario == 0 ? 1 : 2)
+                        && (scenario == 0 || !TvProtocol.Remote.connections.get(1).isOpen()),
+                        "expired queued check never connects and late in-flight candidate closes " + scenario);
+                engine.setWidgetSessionActive(true);
+                engine.reconnect(result::add); idle(engine);
+                check(result.size() == 2 && result.get(1) == null
+                        && TvProtocol.Remote.connections.get(TvProtocol.Remote.connections.size() - 1).isOpen(),
+                        "original address remains available after recovery timeout " + scenario);
+                check(TvProtocol.Pairing.starts == 0 && TvProtocol.Remote.keys.isEmpty(), "timeout never pairs or replays keys " + scenario);
+            } finally { if (release != null) release.countDown(); shutdown(engine); }
+        }
+    }
+
+    private static void changedAddressRejectsConcurrentControls() throws Exception {
+        RemoteEngine engine = engine();
+        CountDownLatch release = null;
+        try {
+            engine.resume(); idle(engine); idle(engine);
+            engine.setWidgetSessionActive(true);
+            TvProtocol.Remote.keys.clear(); TvProtocol.Remote.pictureRequests.clear(); TvProtocol.Remote.pictureToggles.clear();
+            List<String> result = new ArrayList<>(), rejected = new ArrayList<>();
+            release = gateNextConnection();
+            engine.reconnectTo("192.0.2.9", result::add);
+            check(TvProtocol.Remote.connectEntered.await(2, TimeUnit.SECONDS), "address check entered before concurrent controls");
+            engine.sendWidgetKey(21, rejected::add);
+            engine.sendRepeatingKey(22, engine.repeatingSession(), rejected::add);
+            engine.reconnect(rejected::add);
+            engine.requestPictureState(rejected::add);
+            engine.togglePictureMode(rejected::add);
+            engine.sendPictureMode(true, rejected::add);
+            Handler.drain();
+            check(rejected.size() == 6 && rejected.stream().allMatch(value -> value != null),
+                    "widget, foreground, Sync and picture requests fail while address is being verified");
+            engine.setWidgetSessionActive(false);
+            release.countDown(); idle(engine);
+            check(result.size() == 1 && result.get(0) == null && "192.0.2.9".equals(engine.host()),
+                    "widget Stop does not cancel foreground-owned address check");
+            noReconnectCommands("rejected concurrent controls cannot send to old or candidate TV");
+            check(TvProtocol.Remote.pictureRequests.isEmpty() && TvProtocol.Remote.connections.size() == 2,
+                    "address check sends no picture query and concurrent controls do not create extra connections");
+        } finally { if (release != null) release.countDown(); shutdown(engine); }
+    }
+
+    private static void changedAddressCancelsOldCommands() throws Exception {
+        RemoteEngine engine = engine();
+        CountDownLatch release = null;
+        try {
+            engine.resume(); idle(engine); idle(engine); engine.setWidgetSessionActive(true);
+            List<String> previous = new ArrayList<>(), result = new ArrayList<>();
+            engine.sendWidgetKey(21, previous::add); idle(engine);
+            release = blockWorker(engine);
+            engine.sendWidgetKey(22, previous::add);
+            engine.reconnectTo("192.0.2.9", result::add);
+            release.countDown(); idle(engine); Handler.advance(750);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(21)),
+                    "address recovery never replays delivered or queued old-session keys");
+            check(previous.size() == 2 && previous.stream().allMatch("Control cancelled"::equals),
+                    "old delivery callbacks and queued keys complete cancelled once");
+            check(result.size() == 1 && result.get(0) == null && TvProtocol.Remote.connections.get(1).isOpen(),
+                    "stale command completions leave new connected TV alive");
+        } finally { if (release != null) release.countDown(); shutdown(engine); }
     }
 
     private static ThreadPoolExecutor worker(RemoteEngine engine) throws Exception {

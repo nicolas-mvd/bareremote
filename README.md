@@ -2,34 +2,44 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.5.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.5.1.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.5.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.5.1-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
-**Upgrading?** Install over the existing app. Updating from 0.4.1 or 0.4.2 to 0.5.0 keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
+**Upgrading?** Install over the existing app. Updating from 0.4.1 or newer keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup** → **Scan for TVs**, select your TV, then tap **Pair**. You can also enter its IPv4 address from the TV’s network settings.
 3. Enter the six-character code shown on the TV. **Pair each phone separately.** After pairing, opening the app takes you directly to the remote.
 
-The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, pair again in Setup with its new address. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
+The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, scan and select it again to reconnect using your saved pairing. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
 
 ## Find your TV
 
 **Scan for TVs** searches the local network for up to 12 seconds and lists the
-names and IPv4 addresses of TVs advertising Android TV Remote Service. Select a
-result to fill in the address, then tap **Pair** yourself. Discovery does not send
-remote commands, open a TV pairing prompt, or replace your saved pairing. You can
-stop early, select a result while scanning, or scan again.
+names and IPv4 addresses of TVs advertising Android TV Remote Service. When
+already paired, select your TV to reconnect using the saved pairing, even if its
+IP address changed. BareRemote verifies the TV's saved certificate before saving
+the new address. No pairing code is needed, and the existing pairing and saved
+address survive a failed or cancelled check. You can also enter the new IPv4
+address in Setup and tap **Reconnect**. The widget uses the new address after a
+successful check.
+
+For a first pairing, select a result and tap **Pair**. To pair a different or reset
+TV, deliberately choose **Pair with a TV code** in Setup. Selecting a scan result
+never automatically falls back to requesting a new code. Scanning and checking a
+saved TV do not send remote keys. You can stop early, select a result while
+scanning, or scan again.
 
 Turn the TV on before scanning. Guest Wi-Fi, client isolation, separate subnets,
 or networks that block multicast can hide TVs. Some TV services do not advertise
 themselves, and IPv6-only TVs are not listed. In these cases, enter the TV’s IPv4
-address manually. A discovered name is an unauthenticated network label; confirm
+address manually. A discovered name is an unauthenticated network label. Saved-TV
+reconnection verifies the existing certificate; a new pairing requires confirming
 the code on the TV you intend to pair. Scanning stops when its dialog closes or
 the app leaves the screen. There are no background scans or subnet port sweeps.
 
@@ -199,3 +209,18 @@ once, and reconnected after an app-process restart without another code.
 Discovery did not pair with or send controls to the physical TV. Scanning on a
 physical phone remains unverified. The published APK matches the installed,
 tested APK byte-for-byte.
+
+Version **0.5.1** lets an already paired phone scan and reconnect to the same TV
+at a changed IPv4 address without another TV code. Seven host suites pass
+**967 assertions**, including 357 engine assertions covering pinned identity
+reuse, address persistence and rollback, deadlines, cancellation, stale callbacks,
+widget ownership and blocked controls during verification. The signed APK upgraded
+in place from 0.5.0 on an Android 15 emulator, retained its pairing, and reconnected
+from `10.0.2.2` to the same simulated TV through a native-discovered `10.0.2.16`
+proxy. It then reconnected after an app-process restart without another pairing
+request. A second backend presenting a different certificate was rejected; Sync
+still connected to the original saved TV and a navigation key applied once. The
+test used two addresses for the same simulated TV, rather than a physical DHCP
+lease change. The 320 × 640 dp Setup layout keeps Cancel and Reconnect visible.
+No physical-TV pairing or controls were sent. Physical-phone reconnection remains
+unverified. The published APK matches the installed, tested APK byte-for-byte.

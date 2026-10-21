@@ -38,7 +38,7 @@ find "$BUILD/generated" "$BUILD/classes" "$BUILD/dex" -type f -exec rm -f {} +
 "$BT/aapt2" link -I "$ANDROID_JAR" \
     --manifest app/src/main/AndroidManifest.xml \
     --java "$BUILD/generated" --min-sdk-version 26 --target-sdk-version 35 \
-    --version-code 9 --version-name 0.5.0-prototype \
+    --version-code 10 --version-name 0.5.1-prototype \
     -o "$BUILD/resources.apk" "$BUILD/resources.zip"
 
 find app/src/main/java "$BUILD/generated" -name '*.java' > "$BUILD/sources.list"

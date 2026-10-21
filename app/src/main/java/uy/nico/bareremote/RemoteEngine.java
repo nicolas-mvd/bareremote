@@ -65,6 +65,7 @@ final class RemoteEngine {
     private volatile String pendingHost;
     private volatile TvProtocol.Pairing pairing;
     private volatile TvProtocol.Remote remote;
+    private volatile AddressReconnect addressReconnect;
     private Runnable pairingExpiry;
 
     private RemoteEngine(Context context) {
@@ -94,6 +95,7 @@ final class RemoteEngine {
     String host() { return host; }
     String status() { return status; }
     String pictureState() { return confirmedPicture; }
+    boolean isReconnectingTo() { return addressReconnect != null; }
     void setListener(Listener value) { listener = value; state(status); value.onPictureState(confirmedPicture); }
     void clearListener(Listener value) { if (listener == value) listener = null; }
 
@@ -105,6 +107,7 @@ final class RemoteEngine {
         if (pairingBusy) { finish(completion, "Finish pairing first."); return; }
         final int token;
         synchronized (connectionLock) {
+            if (isReconnectingTo()) { finish(completion, "Finish reconnecting in Setup first."); return; }
             token = generation.incrementAndGet();
             cancelInactivePictureRequests();
             closeRemote();
@@ -127,6 +130,144 @@ final class RemoteEngine {
         }, () -> complete(operation, "Remote is busy. Try again."));
     }
 
+    /** Verify the existing TV identity at a new address before replacing only its saved host. */
+    void reconnectTo(String address, Completion completion) {
+        final String clean;
+        try { clean = validateAddress(address); }
+        catch (IllegalArgumentException invalid) { finish(completion, invalid.getMessage()); return; }
+        if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
+        if (pairingBusy) { finish(completion, "Finish pairing first."); return; }
+        cancelReconnectTo();
+        final AddressReconnect request;
+        synchronized (connectionLock) {
+            if (!foreground) { finish(completion, "Control cancelled"); return; }
+            int token = generation.incrementAndGet();
+            cancelInactivePictureRequests();
+            closeRemote();
+            request = new AddressReconnect(token, clean, pin.clone(), completion);
+            addressReconnect = request;
+        }
+        state("Checking saved TV…", request.token);
+        request.timeout = () -> endReconnectTo(request,
+                "TV did not respond. Check Wi-Fi and the TV address, then scan again.");
+        main.postDelayed(request.timeout, Math.max(0, request.deadline - SystemClock.elapsedRealtime()));
+        execute(() -> {
+            try {
+                synchronized (connectionLock) {
+                    if (!canReconnectTo(request)) { endReconnectTo(request, "Control cancelled"); return; }
+                }
+                // Normal control-port readiness proves both the saved server pin and
+                // acceptance of this phone's existing Keystore identity. No code or key is sent.
+                TvProtocol.Remote candidate = TvProtocol.Remote.connect(clean, 6466, request.certificate, identity);
+                synchronized (connectionLock) {
+                    try {
+                        if (!canReconnectTo(request)) {
+                            candidate.close();
+                            endReconnectTo(request, "Control cancelled");
+                            return;
+                        }
+                        request.candidate = candidate;
+                    } catch (Exception failure) {
+                        candidate.close();
+                        throw failure;
+                    }
+                }
+                main.post(() -> acceptReconnectTo(request));
+            } catch (Exception failure) {
+                endReconnectTo(request, reconnectToError(failure));
+            }
+        }, () -> endReconnectTo(request, "Remote is busy. Try again."));
+    }
+
+    /** Cancel only an address check; it never changes the saved pairing. */
+    void cancelReconnectTo() {
+        synchronized (connectionLock) {
+            AddressReconnect request = addressReconnect;
+            if (request == null) return;
+            generation.incrementAndGet();
+            endReconnectTo(request, "Control cancelled");
+        }
+        state(readyStatus());
+    }
+
+    private final class AddressReconnect {
+        final int token, foregroundToken = foregroundGeneration.get();
+        final String address;
+        final byte[] certificate;
+        final Completion completion;
+        final long deadline = SystemClock.elapsedRealtime() + 7000;
+        final AtomicBoolean completed = new AtomicBoolean();
+        TvProtocol.Remote candidate; // Guarded by connectionLock; never used for controls before commit.
+        Runnable timeout;
+        AddressReconnect(int token, String address, byte[] certificate, Completion completion) {
+            this.token = token;
+            this.address = address;
+            this.certificate = certificate;
+            this.completion = completion;
+        }
+    }
+
+    private boolean canReconnectTo(AddressReconnect request) throws SocketTimeoutException {
+        if (request.completed.get() || addressReconnect != request || !current(request.token)
+                || !foreground || foregroundGeneration.get() != request.foregroundToken || pairingBusy) return false;
+        if (SystemClock.elapsedRealtime() >= request.deadline) throw new SocketTimeoutException("Reconnect expired");
+        return true;
+    }
+
+    private void acceptReconnectTo(AddressReconnect request) {
+        synchronized (connectionLock) {
+            try {
+                if (!canReconnectTo(request)) { endReconnectTo(request, "Control cancelled"); return; }
+                if (request.candidate == null || !request.candidate.isOpen())
+                    throw new IOException("TV disconnected");
+                // This commit and lifecycle/Setup mutations run serially on the main
+                // handler. Cancellation cannot turn a stale verification into saved trust.
+                if (!saveAddress(request.address)) {
+                    endReconnectTo(request, "Could not save the TV address. Scan again to retry.");
+                    return;
+                }
+                host = request.address;
+                remote = request.candidate;
+                request.candidate = null;
+                request.completed.set(true);
+                addressReconnect = null;
+            } catch (Exception failure) {
+                endReconnectTo(request, reconnectToError(failure));
+                return;
+            }
+        }
+        main.removeCallbacks(request.timeout);
+        publishPictureState("unknown");
+        state("Connected", request.token);
+        finish(request.completion, null, request.token, -1, request.foregroundToken, false);
+    }
+
+    private boolean saveAddress(String address) {
+        String oldHost = preferences.getString("host", "");
+        if (preferences.edit().putString("host", address).commit()) return true;
+        // Failed commits can still alter SharedPreferences' in-memory map.
+        preferences.edit().putString("host", oldHost).commit();
+        return false;
+    }
+
+    private void endReconnectTo(AddressReconnect request, String error) {
+        synchronized (connectionLock) {
+            if (!request.completed.compareAndSet(false, true)) return;
+            if (request.candidate != null) request.candidate.close();
+            request.candidate = null;
+            if (addressReconnect == request) addressReconnect = null;
+        }
+        main.removeCallbacks(request.timeout);
+        state(readyStatus(), request.token);
+        finish(request.completion, error, request.token, -1, request.foregroundToken, false);
+    }
+
+    private static String reconnectToError(Exception failure) {
+        if (failure instanceof SocketTimeoutException)
+            return "TV timed out. Check Wi-Fi and the TV address, then scan again.";
+        return "Could not reconnect with the saved pairing. Check the TV address. If this TV was reset or its trust changed, choose Pair with a TV code.";
+    }
+
     /** The widget foreground service owns its idle timer, notification and lifetime. */
     void setWidgetSessionActive(boolean active) {
         synchronized (connectionLock) {
@@ -139,6 +280,7 @@ final class RemoteEngine {
 
     void resume() {
         synchronized (connectionLock) { foreground = true; }
+        if (isReconnectingTo()) return;
         if (pairingBusy) {
             if (pairing != null) notifyCode();
             return;
@@ -146,7 +288,7 @@ final class RemoteEngine {
         if (!isPaired()) { state(readyStatus()); return; }
         int token = generation.get();
         execute(() -> {
-            if (!current(token) || !foreground || pairingBusy) return;
+            if (!current(token) || !foreground || pairingBusy || isReconnectingTo()) return;
             state("Connecting…", token);
             try {
                 TvProtocol.Remote connected = connect(token);
@@ -168,6 +310,7 @@ final class RemoteEngine {
             cancelInactivePictureRequests();
             if (!connectionWanted()) closeRemote();
         }
+        cancelReconnectTo();
         if (pairingBusy) cancelPairing();
         else state(readyStatus());
     }
@@ -274,6 +417,7 @@ final class RemoteEngine {
     }
 
     void cancelPairing() {
+        cancelReconnectTo();
         generation.incrementAndGet();
         synchronized (connectionLock) { cancelInactivePictureRequests(); }
         TvProtocol.Pairing old = pairing;
@@ -321,12 +465,13 @@ final class RemoteEngine {
     }
 
     private void pictureRequest(boolean toggle, Completion completion, boolean widgetOwner, boolean quiet) {
-        if (!isPaired() || pairingBusy) {
-            if (!quiet) finish(completion, !isPaired() ? pairingRequiredMessage() : "Finish pairing first.");
-            return;
-        }
         final PictureOperation request;
         synchronized (connectionLock) {
+            if (!isPaired() || pairingBusy || isReconnectingTo()) {
+                if (!quiet) finish(completion, !isPaired() ? pairingRequiredMessage()
+                        : pairingBusy ? "Finish pairing first." : "Finish reconnecting in Setup first.");
+                return;
+            }
             if (pictureRequests.size() >= 6) {
                 if (!quiet) finish(completion, "Picture sync is busy. Try again.");
                 return;
@@ -460,9 +605,13 @@ final class RemoteEngine {
     private void command(int key, boolean longPress, Boolean pictureNight, Completion completion,
             boolean widgetOwner, BooleanSupplier held) {
         if (pictureNight == null && !allowedKey(key)) { finish(completion, "Unknown control"); return; }
-        if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
-        if (pairingBusy) { finish(completion, "Finish pairing in the app first"); return; }
-        final Operation operation = new Operation(generation.get(), completion, widgetOwner, held);
+        final Operation operation;
+        synchronized (connectionLock) {
+            if (!isPaired()) { finish(completion, pairingRequiredMessage()); return; }
+            if (pairingBusy) { finish(completion, "Finish pairing in the app first"); return; }
+            if (isReconnectingTo()) { finish(completion, "Finish reconnecting in Setup first."); return; }
+            operation = new Operation(generation.get(), completion, widgetOwner, held);
+        }
         startTimeout(operation);
         execute(() -> {
             TvProtocol.Remote connection = null;
@@ -560,7 +709,7 @@ final class RemoteEngine {
 
     private boolean canRun(Operation operation) throws SocketTimeoutException {
         boolean ownerActive = operation.widgetToken == -1 ? foreground : widgetSessionActive;
-        if (operation.completed.get() || !current(operation) || !ownerActive || pairingBusy
+        if (operation.completed.get() || !current(operation) || !ownerActive || pairingBusy || isReconnectingTo()
                 || (operation.held != null && !operation.held.getAsBoolean())) return false;
         if (SystemClock.elapsedRealtime() >= operation.deadline) throw new SocketTimeoutException("Command expired");
         return true;
@@ -586,7 +735,8 @@ final class RemoteEngine {
         final String address;
         final byte[] certificate;
         synchronized (connectionLock) {
-            if (!current(token) || !connectionWanted() || pairingBusy) throw new IOException("Control cancelled");
+            if (!current(token) || !connectionWanted() || pairingBusy || isReconnectingTo())
+                throw new IOException("Control cancelled");
             if (!isPaired()) throw new IOException(pairingRequiredMessage());
             TvProtocol.Remote existing = remote;
             if (existing != null && existing.isOpen()) return existing;
@@ -596,7 +746,7 @@ final class RemoteEngine {
         }
         TvProtocol.Remote connected = TvProtocol.Remote.connect(address, 6466, certificate, identity);
         synchronized (connectionLock) {
-            if (!current(token) || !connectionWanted() || pairingBusy) {
+            if (!current(token) || !connectionWanted() || pairingBusy || isReconnectingTo()) {
                 connected.close();
                 throw new IOException("Control cancelled");
             }

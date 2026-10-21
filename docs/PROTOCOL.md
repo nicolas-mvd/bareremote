@@ -21,11 +21,27 @@ references on 2026-10-20. Their source and generated protobuf code are not bundl
 Setup's explicit **Scan for TVs** action uses Android's native `NsdManager` to
 browse `_androidtvremote2._tcp.` over local multicast DNS. It resolves candidates
 serially, accepts only IPv4 addresses advertising remote port 6466, and bounds
-the scan to 12 seconds, 64 candidates and 32 result addresses. Selecting a result
-fills the normal address field; only the separate Pair action contacts port
-6467 and requests a code. Discovery names are untrusted labels, not identity or
-certificate evidence. The existing TV-code check and certificate pin remain the
-trust boundary. No saved host or pin changes during discovery.
+the scan to 12 seconds, 64 candidates and 32 result addresses. Discovery names are
+untrusted labels, not identity or certificate evidence. The existing TV-code
+check and certificate pin remain the trust boundary. Browsing alone does not
+change the saved host or pin.
+
+From 0.5.1, selecting a result with a current saved pairing explicitly checks
+the candidate on port 6466 using the existing Android Keystore identity and exact
+saved TV certificate. Manual address entry followed by **Reconnect** uses the
+same check. Only a successful, ready pinned connection may commit the new host;
+the certificate and pairing identity version are retained. Failure, cancellation,
+leaving the activity, a stale completion or failed persistence must preserve the
+previous host and trust. Candidate verification has a seven-second operation
+deadline and blocks other control work until it completes. No keys or pairing
+requests are sent and no uncertain command is replayed. The verified connection
+then becomes the shared app/widget session; later widget sessions use the new
+saved address.
+
+An unpaired phone or one awaiting the legacy identity migration still uses the
+TV-code pairing flow. **Pair with a TV code** is a separate deliberate action for
+a different or reset TV. A failed saved-TV check never falls back to pairing or
+accepts an advertised name as proof of identity.
 
 The scan holds a temporary Wi-Fi multicast lock for compatibility with older
 Android versions. Stop, timeout, dialog dismissal and activity pause release it

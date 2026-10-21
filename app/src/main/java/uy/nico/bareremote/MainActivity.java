@@ -41,6 +41,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private static final int MUTED = 0xffaaaaaa;
     private final List<View> remoteButtons = new ArrayList<>();
     private final List<RepeatingKeyTouchListener> repeatingButtons = new ArrayList<>();
+    private final List<View> setupActions = new ArrayList<>();
     private RemoteEngine engine;
     private TextView stateText;
     private TextView errorText;
@@ -59,6 +60,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private boolean pendingCode;
     private boolean pairingInProgress;
     private boolean pairingInterrupted;
+    private boolean addressReconnectInProgress;
+    private int addressReconnectGeneration;
     private String hostDraft = "";
     private String codeDraft = "";
 
@@ -288,6 +291,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         pendingCode = false;
         dismissCode();
         LinearLayout body = dialogBody();
+        setupActions.clear();
         if (engine.needsPairingUpgrade()) {
             TextView upgrade = text(RemoteEngine.PAIRING_UPGRADE_MESSAGE
                     + " Your TV address is saved. Tap Pair and enter the new TV code on each updated phone.", 15, WHITE);
@@ -299,12 +303,15 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             interrupted.setPadding(0, 0, 0, dp(12));
             body.addView(interrupted);
         }
-        body.addView(text("Connect your phone and TV to the same network. Scan for your TV, or enter its IP address below.", 15, WHITE));
+        body.addView(text(engine.isPaired()
+                ? "Connect your phone and TV to the same network. Scan to reconnect your saved TV, or enter its IP address and tap Reconnect."
+                : "Connect your phone and TV to the same network. Scan for your TV, or enter its IP address below.", 15, WHITE));
         Button scan = button("Scan for TVs", "Scan the local network for Android TVs");
         scan.setOnClickListener(v -> showDiscovery());
         LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(-1, dp(48));
         scanParams.topMargin = dp(12);
         body.addView(scan, scanParams);
+        setupActions.add(scan);
         discoverySelection = text("", 13, GREEN);
         discoverySelection.setVisibility(View.GONE);
         discoverySelection.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -320,9 +327,20 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         hostInput.setText(hostDraft.isEmpty() ? safeHost() : hostDraft);
         hostInput.setSelectAllOnFocus(true);
         body.addView(hostInput, new LinearLayout.LayoutParams(-1, dp(56)));
-        TextView note = text("The TV will show a pairing code. Each phone pairs separately.", 13, MUTED);
+        setupActions.add(hostInput);
+        TextView note = text(engine.isPaired()
+                ? "Reconnect keeps your pairing. A different or reset TV may need a new TV code."
+                : "The TV will show a pairing code. Each phone pairs separately.", 13, MUTED);
         note.setPadding(0, dp(8), 0, 0);
         body.addView(note);
+        if (engine.isPaired()) {
+            Button pairCode = button("Pair with a TV code", "Pair a different or reset TV using its TV code");
+            pairCode.setOnClickListener(v -> pairSetupAddress());
+            LinearLayout.LayoutParams pairParams = new LinearLayout.LayoutParams(-1, dp(48));
+            pairParams.topMargin = dp(12);
+            body.addView(pairCode, pairParams);
+            setupActions.add(pairCode);
+        }
         TextView modes = text("The sun or moon shows the last TV-confirmed Day or Night preset. Tap it to switch. Sync checks the TV again. A question mark means the mode is unknown or its levels were changed elsewhere. Requires BareHome 1.2 with picture controls enabled. The PlayStation button opens the TV’s source menu.", 13, MUTED);
         modes.setPadding(0, dp(16), 0, dp(12));
         body.addView(modes);
@@ -330,12 +348,14 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         Button widget = button("Add widget", "Add a remote widget to your home screen");
         widget.setOnClickListener(v -> { pendingSetup = false; dismissSetup(); addWidget(); });
         extras.addView(widget, new LinearLayout.LayoutParams(0, dp(48), 1));
+        setupActions.add(widget);
         Button playback = button("Play / Pause", "Play or pause");
         playback.setEnabled(engine.isPaired());
         playback.setOnClickListener(v -> { clearError(); engine.sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE); });
         LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(0, dp(48), 1);
         playParams.leftMargin = dp(8);
         extras.addView(playback, playParams);
+        setupActions.add(playback);
         body.addView(extras);
         TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Open the app to hold directions or volume for repeated presses, or OK for a long press.", 12, MUTED);
         widgetNote.setPadding(0, dp(10), 0, dp(4));
@@ -349,62 +369,132 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(-1, dp(48));
         updateParams.topMargin = dp(12);
         body.addView(updates, updateParams);
+        setupActions.add(updates);
         TextView version = text(installedVersion(), 12, MUTED);
         version.setPadding(0, dp(8), 0, dp(8));
         body.addView(version);
+        if (engine.hasSavedTv()) {
+            Button forget = button("Forget TV", "Remove this phone’s saved TV pairing");
+            forget.setOnClickListener(v -> {
+                pendingSetup = false;
+                pendingCode = false;
+                pairingInProgress = false;
+                pairingInterrupted = false;
+                hostDraft = "";
+                codeDraft = "";
+                if (hostInput != null) hostInput.setText("");
+                engine.forget();
+                refreshTarget();
+                enableControls(false);
+                setupDialog.dismiss();
+            });
+            LinearLayout.LayoutParams forgetParams = new LinearLayout.LayoutParams(-1, dp(48));
+            forgetParams.topMargin = dp(8);
+            forgetParams.bottomMargin = dp(12);
+            body.addView(forget, forgetParams);
+            setupActions.add(forget);
+        }
         ScrollView setupScroll = new ScrollView(this);
         setupScroll.addView(body);
         setupDialog = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
                 .setTitle("Setup").setView(setupScroll)
-                .setPositiveButton("Pair", null)
+                .setPositiveButton(engine.isPaired() ? "Reconnect" : "Pair", null)
                 .setNegativeButton("Cancel", (dialog, which) -> pendingSetup = false)
-                .setNeutralButton("Forget TV", (dialog, which) -> {
-                    pendingSetup = false;
-                    pendingCode = false;
-                    pairingInProgress = false;
-                    pairingInterrupted = false;
-                    hostDraft = "";
-                    codeDraft = "";
-                    if (hostInput != null) hostInput.setText("");
-                    engine.forget();
-                    refreshTarget();
-                    enableControls(false);
-                })
                 .create();
         setupDialog.setOnCancelListener(dialog -> pendingSetup = false);
         setupDialog.setOnDismissListener(dialog -> {
+            cancelAddressReconnect();
             dismissDiscovery();
             if (hostInput != null) hostDraft = hostInput.getText().toString();
             setupDialog = null;
             hostInput = null;
             discoverySelection = null;
+            setupActions.clear();
         });
         setupDialog.setOnShowListener(dialog -> {
-            setupDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(engine.hasSavedTv());
             setupDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                String host = hostInput.getText().toString().trim();
-                if (host.isEmpty()) {
-                    hostInput.setError("Enter your TV’s IP address");
-                    return;
-                }
-                hostDraft = host;
-                codeDraft = "";
-                pendingSetup = false;
-                pairingInterrupted = false;
-                pairingInProgress = true;
-                refreshSync();
-                clearError();
-                setupDialog.dismiss();
-                engine.startPairing(host);
+                if (engine.isPaired()) reconnectSetupAddress();
+                else pairSetupAddress();
             });
         });
         setupDialog.show();
     }
 
+    private String setupAddress() {
+        if (hostInput == null || addressReconnectInProgress) return null;
+        String host = hostInput.getText().toString().trim();
+        if (host.isEmpty()) {
+            hostInput.setError("Enter your TV’s IP address");
+            return null;
+        }
+        hostDraft = host;
+        return host;
+    }
+
+    private void pairSetupAddress() {
+        String host = setupAddress();
+        if (host == null) return;
+        codeDraft = "";
+        pendingSetup = false;
+        pairingInterrupted = false;
+        pairingInProgress = true;
+        refreshSync();
+        clearError();
+        setupDialog.dismiss();
+        engine.startPairing(host);
+    }
+
+    private void reconnectSetupAddress() {
+        String host = setupAddress();
+        if (host == null) return;
+        cancelRepeatingButtons();
+        clearError();
+        final AlertDialog dialog = setupDialog;
+        final int token = ++addressReconnectGeneration;
+        addressReconnectInProgress = true;
+        setSetupBusy(true);
+        discoverySelection.setTextColor(GREEN);
+        discoverySelection.setText("Checking your saved TV at " + host + "…");
+        discoverySelection.setPadding(0, dp(8), 0, 0);
+        discoverySelection.setVisibility(View.VISIBLE);
+        enableControls(false);
+        engine.reconnectTo(host, error -> {
+            if (token != addressReconnectGeneration || !resumed || setupDialog != dialog) return;
+            addressReconnectInProgress = false;
+            setSetupBusy(false);
+            enableControls(engine.isPaired());
+            refreshTarget();
+            if (error != null) {
+                discoverySelection.setTextColor(WHITE);
+                discoverySelection.setText(error);
+                return;
+            }
+            hostDraft = safeHost();
+            pendingSetup = false;
+            dialog.dismiss();
+        });
+    }
+
+    private void setSetupBusy(boolean busy) {
+        for (View action : setupActions) action.setEnabled(!busy);
+        if (setupDialog == null) return;
+        setupDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(!busy);
+    }
+
+    private void cancelAddressReconnect() {
+        if (!addressReconnectInProgress) return;
+        addressReconnectGeneration++;
+        addressReconnectInProgress = false;
+        engine.cancelReconnectTo();
+        enableControls(engine.isPaired());
+    }
+
     private void showDiscovery() {
         if (!resumed || setupDialog == null || discoveryDialog != null) return;
         LinearLayout body = dialogBody();
-        body.addView(text("Turn on your TV. Select it below, then tap Pair in Setup to request its code.", 15, WHITE));
+        body.addView(text(engine.isPaired()
+                ? "Select your saved TV to reconnect without a pairing code. Its identity will be checked before its address is saved."
+                : "Turn on your TV. Select it below, then tap Pair in Setup to request its code.", 15, WHITE));
         TextView status = text("Scanning…", 14, MUTED);
         status.setPadding(0, dp(12), 0, dp(8));
         status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
@@ -435,14 +525,17 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 select.setTextSize(15);
                 select.setMinimumHeight(dp(64));
                 select.setOnClickListener(v -> {
-                    if (hostInput == null) return;
+                    if (!resumed || discoveryDialog != dialog || hostInput == null
+                            || addressReconnectInProgress) return;
                     hostInput.setText(device.host);
                     hostInput.setError(null);
                     hostDraft = device.host;
+                    discoverySelection.setTextColor(GREEN);
                     discoverySelection.setText("Selected " + device.name + ". Tap Pair to continue.");
                     discoverySelection.setPadding(0, dp(8), 0, 0);
                     discoverySelection.setVisibility(View.VISIBLE);
                     dialog.dismiss();
+                    if (engine.isPaired()) reconnectSetupAddress();
                 });
                 LinearLayout.LayoutParams row = new LinearLayout.LayoutParams(-1, -2);
                 row.bottomMargin = dp(8);
@@ -583,6 +676,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     @Override protected void onPause() {
         resumed = false;
         cancelRepeatingButtons();
+        cancelAddressReconnect();
         if (pairingInProgress || pendingCode) {
             pairingInterrupted = true;
             pairingInProgress = false;
@@ -689,6 +783,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     private void enableControls(boolean enabled) {
+        enabled = enabled && !addressReconnectInProgress && !engine.isReconnectingTo();
         if (!enabled) cancelRepeatingButtons();
         for (View button : remoteButtons) {
             button.setEnabled(enabled);
@@ -698,7 +793,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     private void refreshSync() {
-        boolean enabled = engine.isPaired() && !pairingInProgress;
+        boolean enabled = engine.isPaired() && !pairingInProgress
+                && !addressReconnectInProgress && !engine.isReconnectingTo();
         syncButton.setEnabled(enabled);
         syncButton.setAlpha(enabled ? 1f : .38f);
     }
