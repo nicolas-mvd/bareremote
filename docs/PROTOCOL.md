@@ -10,10 +10,30 @@ BareRemote implements the small subset of Android TV Remote v2 needed for D-pad,
 - [Remote wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remotemessage.proto)
 - [Google's original pairing implementation](https://android.googlesource.com/platform/external/google-tv-pairing-protocol/+/master/java/src/com/google/polo/pairing/PairingSession.java)
 - [Google's original challenge calculation](https://android.googlesource.com/platform/external/google-tv-pairing-protocol/+/master/java/src/com/google/polo/pairing/PoloChallengeResponse.java)
+- [Android network service discovery API](https://developer.android.com/reference/android/net/nsd/NsdManager)
+- [Home Assistant's Android TV Remote discovery declaration](https://github.com/home-assistant/core/blob/dev/homeassistant/components/androidtv_remote/manifest.json)
 
-These were consulted as interoperability references on 2026-10-17. Their source and generated protobuf code are not bundled. The original Google pairing project and androidtvremote2 use Apache-2.0; the schema also credits louis49/androidtv-remote. Protocol field numbers and enum values are implemented directly in BareRemote's own code.
+The pairing and control references were consulted on 2026-10-17; the discovery
+references on 2026-10-20. Their source and generated protobuf code are not bundled. The original Google pairing project and androidtvremote2 use Apache-2.0; the schema also credits louis49/androidtv-remote. Protocol field numbers and enum values are implemented directly in BareRemote's own code.
 
 ## Pairing and trust
+
+Setup's explicit **Scan for TVs** action uses Android's native `NsdManager` to
+browse `_androidtvremote2._tcp.` over local multicast DNS. It resolves candidates
+serially, accepts only IPv4 addresses advertising remote port 6466, and bounds
+the scan to 12 seconds, 64 candidates and 32 result addresses. Selecting a result
+fills the normal address field; only the separate Pair action contacts port
+6467 and requests a code. Discovery names are untrusted labels, not identity or
+certificate evidence. The existing TV-code check and certificate pin remain the
+trust boundary. No saved host or pin changes during discovery.
+
+The scan holds a temporary Wi-Fi multicast lock for compatibility with older
+Android versions. Stop, timeout, dialog dismissal and activity pause release it
+and stop browsing. Generation checks suppress late callbacks, including older
+Android resolver operations that cannot be directly cancelled. There is no
+subnet port sweep, service, polling, or automatic discovery on launch or Sync.
+TVs must advertise their remote service on the same multicast-capable network;
+manual IPv4 entry remains available.
 
 Pairing uses mutual TLS on port 6467, followed by version-2 request, hexadecimal-code options, configuration and secret messages. The six-character TV code contains a check byte and two nonce bytes. The SHA-256 input is the unsigned big-endian RSA modulus and exponent from the phone certificate, then those from the TV certificate, then the two nonce bytes. The first digest byte must match the code's check byte before a secret is sent.
 

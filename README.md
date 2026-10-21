@@ -2,21 +2,36 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.4.2.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**Prototype, version 0.5.0.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.4.2-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.4.2-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.5.0-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
-**Upgrading?** Install over the existing app. Updating from 0.4.1 to 0.4.2 keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
+**Upgrading?** Install over the existing app. Updating from 0.4.1 or 0.4.2 to 0.5.0 keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
-2. Put the phone and TV on the same local network. Open BareRemote → **Setup**, enter the TV’s IPv4 address, and tap **Pair**. Find the address in the TV’s network settings.
+2. Put the phone and TV on the same local network. Open BareRemote → **Setup** → **Scan for TVs**, select your TV, then tap **Pair**. You can also enter its IPv4 address from the TV’s network settings.
 3. Enter the six-character code shown on the TV. **Pair each phone separately.** After pairing, opening the app takes you directly to the remote.
 
 The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, pair again in Setup with its new address. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
+
+## Find your TV
+
+**Scan for TVs** searches the local network for up to 12 seconds and lists the
+names and IPv4 addresses of TVs advertising Android TV Remote Service. Select a
+result to fill in the address, then tap **Pair** yourself. Discovery does not send
+remote commands, open a TV pairing prompt, or replace your saved pairing. You can
+stop early, select a result while scanning, or scan again.
+
+Turn the TV on before scanning. Guest Wi-Fi, client isolation, separate subnets,
+or networks that block multicast can hide TVs. Some TV services do not advertise
+themselves, and IPv6-only TVs are not listed. In these cases, enter the TV’s IPv4
+address manually. A discovered name is an unauthenticated network label; confirm
+the code on the TV you intend to pair. Scanning stops when its dialog closes or
+the app leaves the screen. There are no background scans or subnet port sweeps.
 
 Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. Hold a **direction or volume button** in the app to repeat presses: the first press sends immediately, then repetition starts after 400 ms, up to roughly eight presses per second. Releasing, dragging off the pad or volume button, leaving the app, or a connection error stops repetition. A held button never reconnects automatically after a failure. Hold **OK** for a long press, including BareHome’s mode editor. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
 
@@ -92,7 +107,7 @@ See [protocol notes and primary implementation references](docs/PROTOCOL.md) for
 
 ## Prototype limits and validation
 
-One saved TV per phone, manual IPv4 entry, no discovery, text keyboard, or voice input. There are no accounts, scheduled background polling, or automatic startup. Manual update checks and downloads contact GitHub; remote commands remain local. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
+One saved TV per phone, IPv4 discovery or manual entry, no text keyboard or voice input. There are no accounts, scheduled background polling, or automatic startup. Manual update checks and downloads contact GitHub; remote commands and discovery remain local. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
 
 The 0.2.0 suites passed **156 protocol assertions** (including loopback mutual TLS) and **55 engine assertions** covering shared sessions, rapid command queues, Sync, deadlines, and cancellation across app/widget lifecycle changes.
 
@@ -169,3 +184,18 @@ Android widget host at 288 × 476 dp verified widget rendering and that its new
 app button launches the remote. The emulator launcher rejected the existing
 full-page minimum size, so this does not validate launcher pinning. These
 are emulator/mock results; 0.4.2 has not been tested on a physical phone or TV.
+
+Version **0.5.0** adds explicit local-network TV discovery in Setup. Seven host
+suites pass **819 assertions**, including 214 discovery assertions covering
+IPv4/service validation, Android's resolved service-type variants, serial
+resolution, bounded results, device loss, cancellation, timeouts and stale
+callbacks. The signed APK on an Android 15 emulator discovered a locally
+advertised simulated TV and the physical CSV4K TV over mDNS. Selecting the
+simulated TV filled its address; Stop, Scan again, 12-second completion and
+leaving the app released the scan's multicast lock. The discovery dialog fits a
+320 × 640 dp screen. The discovered simulated TV completed pairing using the
+installed app's Android Keystore identity, applied one navigation key exactly
+once, and reconnected after an app-process restart without another code.
+Discovery did not pair with or send controls to the physical TV. Scanning on a
+physical phone remains unverified. The published APK matches the installed,
+tested APK byte-for-byte.

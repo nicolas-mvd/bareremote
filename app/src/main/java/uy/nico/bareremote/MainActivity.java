@@ -47,10 +47,13 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private ImageButton syncButton;
     private ImageButton pictureButton;
     private AlertDialog setupDialog;
+    private AlertDialog discoveryDialog;
     private AlertDialog codeDialog;
     private AlertDialog helpDialog;
     private EditText hostInput;
     private EditText codeInput;
+    private TvDiscovery discovery;
+    private TextView discoverySelection;
     private boolean resumed;
     private boolean pendingSetup;
     private boolean pendingCode;
@@ -70,6 +73,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
         engine = RemoteEngine.get(this);
+        discovery = new TvDiscovery(this);
         hostDraft = safeHost();
         if (savedState != null) {
             hostDraft = savedState.getString("hostDraft", hostDraft);
@@ -295,7 +299,16 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             interrupted.setPadding(0, 0, 0, dp(12));
             body.addView(interrupted);
         }
-        body.addView(text("Use the same Wi-Fi as your TV. Find its IP address in the TV’s network settings.", 15, WHITE));
+        body.addView(text("Connect your phone and TV to the same network. Scan for your TV, or enter its IP address below.", 15, WHITE));
+        Button scan = button("Scan for TVs", "Scan the local network for Android TVs");
+        scan.setOnClickListener(v -> showDiscovery());
+        LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(-1, dp(48));
+        scanParams.topMargin = dp(12);
+        body.addView(scan, scanParams);
+        discoverySelection = text("", 13, GREEN);
+        discoverySelection.setVisibility(View.GONE);
+        discoverySelection.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        body.addView(discoverySelection);
         hostInput = new EditText(this);
         hostInput.setSingleLine(true);
         hostInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
@@ -360,9 +373,11 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
                 .create();
         setupDialog.setOnCancelListener(dialog -> pendingSetup = false);
         setupDialog.setOnDismissListener(dialog -> {
+            dismissDiscovery();
             if (hostInput != null) hostDraft = hostInput.getText().toString();
             setupDialog = null;
             hostInput = null;
+            discoverySelection = null;
         });
         setupDialog.setOnShowListener(dialog -> {
             setupDialog.getButton(AlertDialog.BUTTON_NEUTRAL).setEnabled(engine.hasSavedTv());
@@ -384,6 +399,80 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             });
         });
         setupDialog.show();
+    }
+
+    private void showDiscovery() {
+        if (!resumed || setupDialog == null || discoveryDialog != null) return;
+        LinearLayout body = dialogBody();
+        body.addView(text("Turn on your TV. Select it below, then tap Pair in Setup to request its code.", 15, WHITE));
+        TextView status = text("Scanning…", 14, MUTED);
+        status.setPadding(0, dp(12), 0, dp(8));
+        status.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        body.addView(status);
+        LinearLayout results = column();
+        body.addView(results);
+        TextView fallback = text("If your TV is missing, check its network connection or enter its IP address in Setup.", 13, MUTED);
+        fallback.setPadding(0, dp(12), 0, dp(8));
+        body.addView(fallback);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(body);
+        AlertDialog dialog = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("TVs on your network").setView(scroll)
+                .setPositiveButton("Stop", null)
+                .setNegativeButton("Back", null).create();
+        discoveryDialog = dialog;
+        TvDiscovery.Listener listener = (devices, scanning, message) -> {
+            if (!resumed || discoveryDialog != dialog) return;
+            status.setText(message);
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setText(scanning ? "Stop" : "Scan again");
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTag(scanning);
+            results.removeAllViews();
+            for (TvDiscovery.Device device : devices) {
+                Button select = button(device.name + "\n" + device.host,
+                        "Select " + device.name + ", " + device.host);
+                select.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+                select.setPadding(dp(12), dp(8), dp(12), dp(8));
+                select.setTextSize(15);
+                select.setMinimumHeight(dp(64));
+                select.setOnClickListener(v -> {
+                    if (hostInput == null) return;
+                    hostInput.setText(device.host);
+                    hostInput.setError(null);
+                    hostDraft = device.host;
+                    discoverySelection.setText("Selected " + device.name + ". Tap Pair to continue.");
+                    discoverySelection.setPadding(0, dp(8), 0, 0);
+                    discoverySelection.setVisibility(View.VISIBLE);
+                    dialog.dismiss();
+                });
+                LinearLayout.LayoutParams row = new LinearLayout.LayoutParams(-1, -2);
+                row.bottomMargin = dp(8);
+                results.addView(select, row);
+            }
+        };
+        dialog.setOnDismissListener(ignored -> {
+            discovery.close();
+            if (discoveryDialog == dialog) discoveryDialog = null;
+        });
+        dialog.setOnShowListener(ignored -> {
+            Button action = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            action.setOnClickListener(v -> {
+                if (Boolean.TRUE.equals(action.getTag())) {
+                    discovery.close();
+                    // Keep the found rows available for selection after stopping.
+                    action.setTag(false);
+                    action.setText("Scan again");
+                    status.setText(results.getChildCount() == 0
+                            ? "Scan stopped. No TVs found." : "Scan stopped. Select your TV.");
+                } else discovery.start(listener);
+            });
+            discovery.start(listener);
+        });
+        dialog.show();
+    }
+
+    private void dismissDiscovery() {
+        discovery.close();
+        if (discoveryDialog != null) discoveryDialog.dismiss();
     }
 
     private void showCode() {
@@ -502,6 +591,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             codeDraft = "";
             if (codeInput != null) codeInput.setText("");
         }
+        dismissDiscovery();
         dismissSetup();
         dismissCode();
         if (helpDialog != null) helpDialog.dismiss();
