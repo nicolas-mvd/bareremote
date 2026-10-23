@@ -5,10 +5,10 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ScrollView;
 
-/** Five native groups, sized once per layout. Extra height becomes breathing room. */
+/** Native control groups, sized once per layout. Extra height becomes breathing room. */
 final class RemoteSurface extends ViewGroup {
-    private View header, status, pad, navigation, volume;
-    private int headerHeight, statusHeight, padSize, navigationHeight, volumeHeight;
+    private View header, status, pad, keyboard, navigation, volume;
+    private int headerHeight, statusHeight, padSize, keyboardHeight, navigationHeight, volumeHeight;
     private int viewportHeight;
 
     RemoteSurface(Context context) { super(context); }
@@ -16,6 +16,7 @@ final class RemoteSurface extends ViewGroup {
     void setHeader(View view) { header = view; addView(view); }
     void setStatus(View view) { status = view; addView(view); }
     void setPad(View view) { pad = view; addView(view); }
+    void setKeyboard(View view) { keyboard = view; addView(view); }
     void setNavigation(View view) { navigation = view; addView(view); }
     void setVolume(View view) { volume = view; addView(view); }
 
@@ -23,13 +24,14 @@ final class RemoteSurface extends ViewGroup {
         int width = MeasureSpec.getSize(widthSpec);
         int controlsWidth = Math.min(width, dp(430));
         headerHeight = dp(48);
+        keyboardHeight = dp(48);
         volumeHeight = dp(56);
         navigationHeight = Math.max(dp(64), Math.min(dp(88), Math.round(controlsWidth * .22f)));
         measureExactly(header, controlsWidth, headerHeight);
         status.measure(MeasureSpec.makeMeasureSpec(controlsWidth, MeasureSpec.EXACTLY),
                 MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
         statusHeight = status.getMeasuredHeight();
-        int fixed = headerHeight + statusHeight + navigationHeight + volumeHeight + dp(58);
+        int fixed = headerHeight + statusHeight + keyboardHeight + navigationHeight + volumeHeight + dp(58);
         int preferredPad = Math.min(dp(384), Math.round(controlsWidth * .92f));
         // ScrollView first measures its child with an unconstrained height. Its
         // actual viewport is supplied separately so error text can shrink the
@@ -38,9 +40,10 @@ final class RemoteSurface extends ViewGroup {
                 ? Math.min(preferredPad, Math.max(dp(180), viewportHeight - fixed))
                 : preferredPad;
         measureExactly(pad, padSize, padSize);
+        measureExactly(keyboard, keyboardHeight, keyboardHeight);
         measureExactly(navigation, controlsWidth, navigationHeight);
         measureExactly(volume, controlsWidth, volumeHeight);
-        int minimum = headerHeight + statusHeight + padSize + navigationHeight
+        int minimum = headerHeight + statusHeight + padSize + keyboardHeight + navigationHeight
                 + volumeHeight + dp(58);
         int height = Math.max(minimum, viewportHeight);
         if (MeasureSpec.getMode(heightSpec) != MeasureSpec.UNSPECIFIED)
@@ -50,12 +53,13 @@ final class RemoteSurface extends ViewGroup {
 
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         int width = right - left, height = bottom - top;
-        int fixed = headerHeight + statusHeight + padSize + navigationHeight + volumeHeight + dp(58);
+        int fixed = headerHeight + statusHeight + padSize + keyboardHeight + navigationHeight + volumeHeight + dp(58);
         int free = Math.max(0, height - fixed);
         center(header, width, 0);
         center(status, width, headerHeight);
         center(pad, width, headerHeight + statusHeight + dp(20) + Math.round(free * .45f));
         center(navigation, width, height - volumeHeight - dp(18) - navigationHeight);
+        center(keyboard, width, (pad.getBottom() + navigation.getTop() - keyboardHeight) / 2);
         center(volume, width, height - volumeHeight);
     }
 

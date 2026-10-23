@@ -63,8 +63,8 @@ If the connection gets stuck, tap the **Sync icon** in the centered green strip 
 Version 0.6.0 adds a native keyboard mode. Select a search box or another text
 field on the TV. When Android TV Remote Service asks to show its keyboard,
 the open BareRemote app switches automatically and opens your phone's keyboard.
-You can also tap the **keyboard icon** at the top of the remote to open the mode
-manually. The TV must still provide a focused text field; opening this mode
+You can also tap the **keyboard icon** between the down arrow and Home to open
+the mode manually. The TV must still provide a focused text field; opening this mode
 does not select a field or force an unsupported TV app to accept text.
 
 Type or paste to send committed text to the TV. Unicode and native input-method
@@ -287,3 +287,9 @@ switching, Japanese composition, Unicode commits, clipboard paste, Delete,
 Enter, focus loss, and continued normal remote controls. These are
 emulator/mock results; keyboard input in 0.6.0 has not been checked on a physical
 phone or the CSV4K TV.
+
+Version **0.6.1** moves the keyboard shortcut between the down arrow and Home,
+and recenters the top green Sync/mode pill. This small layout patch passed a
+signed build and 38 focused native layout/mode assertions at 411dp and 320dp
+emulator widths. Pairing, protocol and widget behavior are unchanged; no
+physical-TV actions were sent during validation.

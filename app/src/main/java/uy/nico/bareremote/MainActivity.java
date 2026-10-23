@@ -147,10 +147,6 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         shortParams.leftMargin = dp(8);
         shortParams.rightMargin = dp(8);
         header.addView(shortcutSpace, shortParams);
-        keyboardButton = icon(R.drawable.remote_icon_keyboard, "Keyboard mode");
-        keyboardButton.setOnClickListener(v -> showKeyboard(true));
-        remoteButtons.add(keyboardButton);
-        header.addView(keyboardButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         ImageButton power = keyIcon(R.drawable.remote_icon_power, "TV power", KeyEvent.KEYCODE_POWER);
         header.addView(power, new LinearLayout.LayoutParams(dp(48), dp(48)));
         content.setHeader(header);
@@ -183,6 +179,11 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         });
         pad.setCenter(okay);
         content.setPad(pad);
+
+        keyboardButton = icon(R.drawable.remote_icon_keyboard, "Keyboard mode");
+        keyboardButton.setOnClickListener(v -> showKeyboard(true));
+        remoteButtons.add(keyboardButton);
+        content.setKeyboard(keyboardButton);
 
         LinearLayout navigation = row();
         ImageButton back = keyIcon(R.drawable.remote_icon_back, "Back", KeyEvent.KEYCODE_BACK);
