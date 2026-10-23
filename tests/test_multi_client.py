@@ -30,7 +30,7 @@ class MultiClientTests(unittest.TestCase):
             subprocess.run([
                 "javac", "--release", "8", "-d", str(temporary),
                 *[str(java / name) for name in (
-                    "Proto.java", "TvProtocol.java", "KeyboardState.java", "KeyboardSession.java", "PictureStateWire.java", "PictureStateClient.java")],
+                    "Proto.java", "TvProtocol.java", "KeyboardState.java", "KeyboardSession.java", "PictureStateWire.java", "PictureStateClient.java", "DogStateWire.java", "DogStateClient.java")],
                 str(root / "tests/FakeTv.java"), str(root / "tests/MultiClientTest.java"),
             ], check=True, capture_output=True, text=True, timeout=15)
             result = subprocess.run([

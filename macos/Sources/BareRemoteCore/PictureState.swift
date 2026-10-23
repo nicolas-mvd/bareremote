@@ -59,10 +59,11 @@ public enum PictureStateWire {
 
 public enum BareHomeLink {
     public static func validate(_ uri: String) throws {
-        if uri == "barehome://inputs" { return }
+        if uri == "barehome://inputs" || uri == "barehome://dog/setup" { return }
         guard uri.utf8.count <= 256 else { throw PictureStateError.localNetwork }
         let pieces = uri.components(separatedBy: "?")
-        guard pieces.count == 2, ["barehome://picture/state", "barehome://picture/toggle"].contains(pieces[0]) else {
+        guard pieces.count == 2, ["barehome://picture/state", "barehome://picture/toggle",
+                                   "barehome://dog/state", "barehome://dog/start", "barehome://dog/stop"].contains(pieces[0]) else {
             throw PictureStateError.localNetwork
         }
         let fields = pieces[1].components(separatedBy: "&")

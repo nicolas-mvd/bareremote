@@ -299,12 +299,13 @@ public final class TVRemote: @unchecked Sendable {
         if let holdFailure { throw holdFailure }
     }
 
-    public func sendAppLink(_ uri: String) throws {
+    public func sendAppLink(_ uri: String, timeout: TimeInterval = 5) throws {
+        guard timeout > 0, timeout <= 5 else { throw TVProtocolError.timedOut }
         try BareHomeLink.validate(uri)
         commandLock.lock(); defer { commandLock.unlock() }
         state.lock(); let supportsLinks = features & 512 != 0; state.unlock()
         guard supportsLinks else { throw TVProtocolError.unsupported("This TV remote service does not support BareHome commands.") }
-        try send(Proto.Writer().message(90, Proto.Writer().text(1, uri)))
+        try send(Proto.Writer().message(90, Proto.Writer().text(1, uri)), deadline: TLSTransport.deadline(after: timeout))
         recordCommand()
     }
 

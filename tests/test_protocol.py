@@ -20,7 +20,7 @@ class ProtocolTests(unittest.TestCase):
             subprocess.run([
                 "javac", "--release", "8", "-d", str(tmp),
                 str(java / "Proto.java"), str(java / "TvProtocol.java"), str(java / "KeyboardState.java"), str(java / "KeyboardSession.java"), str(java / "PictureStateWire.java"),
-                str(java / "PictureStateClient.java"), str(root / "tests/ProtocolTest.java"),
+                str(java / "PictureStateClient.java"), str(java / "DogStateWire.java"), str(java / "DogStateClient.java"), str(root / "tests/ProtocolTest.java"),
                 str(root / "tests/ProtocolCli.java"),
             ], check=True, capture_output=True, text=True)
             result = subprocess.run([

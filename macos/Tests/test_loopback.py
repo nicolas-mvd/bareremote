@@ -72,7 +72,7 @@ def main():
         subprocess.run([
             "javac", "--release", "8", "-d", str(temporary), str(java / "Proto.java"),
             str(java / "TvProtocol.java"), str(java / "PictureStateWire.java"),
-            str(java / "PictureStateClient.java"), str(java / "KeyboardState.java"),
+            str(java / "PictureStateClient.java"), str(java / "DogStateWire.java"), str(java / "DogStateClient.java"), str(java / "KeyboardState.java"),
             str(java / "KeyboardSession.java"), str(root / "tests/FakeTv.java"),
             str(macos / "Tests/NativeFaultTv.java"),
             str(macos / "Tests/NativeImeTv.java"),

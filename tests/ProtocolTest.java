@@ -372,6 +372,7 @@ public final class ProtocolTest {
                         equal(read(socket).message(90).bytes(1), "barehome://picture/day".getBytes("UTF-8"), "explicit Day link");
                         equal(read(socket).message(90).bytes(1), "barehome://picture/night".getBytes("UTF-8"), "explicit Night link");
                         equal(read(socket).message(90).bytes(1), "barehome://inputs".getBytes("UTF-8"), "native input picker link");
+                        equal(read(socket).message(90).bytes(1), "barehome://dog/setup".getBytes("UTF-8"), "fixed TV Dog Mode setup link");
                     }
                     Proto.Message key = read(socket).message(10);
                     check(key.integer(1, 0) == 178 && key.integer(2, 0) == 3, "input key works with or without app links");
@@ -384,6 +385,7 @@ public final class ProtocolTest {
                     remote.sendPictureMode(false);
                     remote.sendPictureMode(true);
                     remote.sendInputPicker();
+                    remote.sendDogSetup();
                 } else {
                     try {
                         remote.sendPictureMode(true);

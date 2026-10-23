@@ -34,6 +34,7 @@ final class RemoteEngine {
         void onError(String message);
         default void onPictureState(String state) {}
         default void onKeyboardState(KeyboardState state) {}
+        default void onDogMode() {}
     }
     interface Completion { void done(String error); }
     private static RemoteEngine instance;
@@ -53,6 +54,10 @@ final class RemoteEngine {
     private final Set<PictureOperation> pictureRequests = new HashSet<>();
     private final AtomicInteger pictureRevision = new AtomicInteger();
     private volatile String confirmedPicture = "unknown";
+    private volatile String dogMode = "unknown", dogStatus = "Check status to read Dog Mode from your TV.";
+    private volatile boolean dogBusy;
+    private final AtomicInteger dogRevision = new AtomicInteger();
+    private DogOperation dogRequest; // Guarded by connectionLock; never more than one request.
     private final AtomicInteger generation = new AtomicInteger();
     private final AtomicInteger widgetGeneration = new AtomicInteger();
     private final AtomicInteger foregroundGeneration = new AtomicInteger();
@@ -107,6 +112,7 @@ final class RemoteEngine {
     void setListener(Listener value) {
         listener = value; state(status); value.onPictureState(confirmedPicture);
         value.onKeyboardState(keyboardState());
+        value.onDogMode();
     }
     KeyboardState keyboardState() {
         TvProtocol.Remote connection = remote;
@@ -138,6 +144,7 @@ final class RemoteEngine {
             if (isReconnectingTo()) { finish(completion, "Finish reconnecting in Setup first."); return; }
             token = generation.incrementAndGet();
             cancelInactivePictureRequests();
+            dogMode = "unknown"; dogNotice("Check Dog Mode status to confirm the TV’s settings.");
             closeRemote();
         }
         state("Connecting…", token);
@@ -341,6 +348,7 @@ final class RemoteEngine {
             if (foreground) foregroundGeneration.incrementAndGet();
             foreground = false;
             cancelInactivePictureRequests();
+            dogMode = "unknown"; dogNotice("Check Dog Mode status to confirm the TV’s settings.");
             if (!connectionWanted()) closeRemote();
         }
         cancelReconnectTo();
@@ -452,7 +460,10 @@ final class RemoteEngine {
     void cancelPairing() {
         cancelReconnectTo();
         generation.incrementAndGet();
-        synchronized (connectionLock) { cancelInactivePictureRequests(); }
+        synchronized (connectionLock) {
+            cancelInactivePictureRequests();
+            dogMode = "unknown"; dogNotice("Check Dog Mode status to confirm the TV’s settings.");
+        }
         TvProtocol.Pairing old = pairing;
         pairing = null;
         pendingHost = null;
@@ -474,6 +485,7 @@ final class RemoteEngine {
         pin = null;
         pairedIdentityVersion = 0;
         publishPictureState("unknown");
+        dogMode = "unknown"; dogBusy = false; dogNotice("Pair your TV to check Dog Mode.");
         state("Pair your TV in Setup");
     }
 
@@ -488,6 +500,152 @@ final class RemoteEngine {
     }
     void sendLongKey(int key) { command(key, true, null); }
     void sendWidgetKey(int key, Completion completion) { command(key, false, completion); }
+
+    String dogMode() { return dogMode; }
+    boolean dogBusy() { return dogBusy; }
+    String dogStatus() { return dogStatus; }
+    void refreshDogMode() { dogRequest("state"); }
+    void openDogSetup() { dogRequest("setup"); }
+    void startDogMode() {
+        if (!"off".equals(dogMode)) { dogNotice("Check Dog Mode status before starting."); return; }
+        dogRequest("start");
+    }
+    void stopDogMode() {
+        if (!("active".equals(dogMode) || "restore_required".equals(dogMode)
+                || "starting".equals(dogMode) || "unknown".equals(dogMode) || "error".equals(dogMode)
+                || DogStateWire.isStartupFailure(dogMode))) {
+            dogNotice("Check Dog Mode status before restoring settings."); return;
+        }
+        dogRequest("stop");
+    }
+
+    private void dogNotice(String text) {
+        dogStatus = text;
+        main.post(() -> { Listener target = listener; if (target != null) target.onDogMode(); });
+    }
+    private void dogRequest(String action) {
+        final DogOperation request;
+        synchronized (connectionLock) {
+            if (dogRequest != null || dogBusy) return;
+            if (!foreground || !isPaired() || pairingBusy || isReconnectingTo()) {
+                dogNotice(!isPaired() ? pairingRequiredMessage() : "Connect to your TV and finish pairing first.");
+                return;
+            }
+            request = new DogOperation(generation.get(), action);
+            dogRequest = request;
+            dogBusy = true;
+            dogNotice("state".equals(action) ? "Checking Dog Mode on your TV…"
+                    : "setup".equals(action) ? "Opening Dog Mode setup on your TV…"
+                    : "start".equals(action) ? "Starting Dog Mode…" : "Restoring TV settings…");
+        }
+        request.operation.timeout = () -> {
+            synchronized (connectionLock) {
+                if (request.operation.completed.get()) return;
+                if (request.operation.writing != null) discard(request.operation.writing);
+                request.operation.writing = null;
+                finishDog(request, null, "No confirmation from the TV. Check status; the request was not repeated.");
+            }
+        };
+        main.postDelayed(request.operation.timeout, Math.max(0, request.operation.deadline - SystemClock.elapsedRealtime()));
+        execute(() -> {
+            TvProtocol.Remote connection = null;
+            boolean attempted = false;
+            try {
+                if (!canRun(request.operation)) { finishDog(request, null, "Dog Mode request cancelled. Check status."); return; }
+                connection = connect(request.operation, request.replyBudget);
+                synchronized (connectionLock) {
+                    if (!canRun(request.operation)) { finishDog(request, null, "Dog Mode request cancelled. Check status."); return; }
+                    dogConnectionState(request, "Connected");
+                    long remaining = request.operation.deadline - SystemClock.elapsedRealtime();
+                    if (remaining < request.replyBudget) throw new SocketTimeoutException("Dog Mode request expired before sending");
+                    if (!"setup".equals(action)) {
+                        request.client = connection.openDogStateRequest(request.replyBudget);
+                        pictureWorker.execute(() -> awaitDog(request));
+                    }
+                    request.operation.writing = connection;
+                    attempted = true;
+                }
+                if ("setup".equals(action)) {
+                    connection.sendDogSetup();
+                    connection.awaitCommandDeliveryWindow();
+                } else connection.sendDogStateRequest(request.client, action);
+                synchronized (connectionLock) { request.operation.writing = null; }
+                if ("setup".equals(action)) finishDog(request, null, null);
+            } catch (Exception failure) {
+                synchronized (connectionLock) {
+                    request.operation.writing = null;
+                    if (attempted && connection != null) discard(connection);
+                }
+                if (connection == null || !connection.isOpen()) dogConnectionState(request, "Disconnected");
+                finishDog(request, null, failure instanceof UnsupportedOperationException ? failure.getMessage()
+                        : "No Dog Mode confirmation. Check the TV and BareHome, then check status. The request was not repeated.");
+            }
+        }, () -> finishDog(request, null, "Remote is busy. Check Dog Mode status again."));
+    }
+    private void dogConnectionState(DogOperation request, String value) {
+        main.post(() -> {
+            if (current(request.operation) && request.revision == dogRevision.get())
+                publishState(value, request.operation.token);
+        });
+    }
+    private final class DogOperation {
+        final Operation operation;
+        final String action;
+        final int replyBudget;
+        final int revision = dogRevision.incrementAndGet();
+        DogStateClient client;
+        DogOperation(int token, String action) {
+            replyBudget = "setup".equals(action) ? TvProtocol.DELIVERY_WINDOW_MS : "start".equals(action) ? 35000 : 8000;
+            operation = new Operation(token, null, false, null,
+                    "setup".equals(action) ? 7000 : replyBudget + OPEN_CONNECTION_MS);
+            this.action = action;
+        }
+    }
+    private void awaitDog(DogOperation request) {
+        try {
+            finishDog(request, request.client.await("start".equals(request.action), state -> main.post(() -> {
+                if (!current(request.operation) || request.operation.completed.get()
+                        || request.revision != dogRevision.get()) return;
+                dogMode = state;
+                dogNotice("The TV is opening NS NOW and selecting CANAL 10. Waiting for confirmation…");
+            })), null);
+        }
+        catch (Exception failure) {
+            finishDog(request, null, "No Dog Mode confirmation. Check status before trying again; the request was not repeated.");
+        }
+    }
+    private void finishDog(DogOperation request, String result, String error) {
+        synchronized (connectionLock) {
+            if (!request.operation.completed.compareAndSet(false, true)) return;
+            cancelRecovery(request.operation);
+            if (request.client != null) request.client.close();
+            if (dogRequest == request) dogRequest = null;
+        }
+        main.removeCallbacks(request.operation.timeout);
+        main.post(() -> {
+            if (!current(request.operation) || request.revision != dogRevision.get()) return;
+            dogBusy = false;
+            dogMode = error == null && DogStateWire.knownState(result) ? result : "unknown";
+            dogNotice(error != null ? error
+                    : "setup".equals(request.action) ? "Follow the setup prompt on your TV, then choose Check status."
+                    : "off".equals(result) ? "Dog Mode is off. TV energy settings are restored."
+                    : "starting".equals(result) ? "The TV is still starting Dog Mode. Check status or restore settings to cancel."
+                    : "active".equals(result) ? "Dog Mode is active on the TV. You can close BareRemote."
+                    : "restore_required".equals(result) ? "TV energy settings need restoring. Choose Restore settings & exit."
+                    : "unavailable".equals(result) ? "Open BareHome on the TV and complete its one-time Dog Mode setup."
+                    : DogStateWire.isStartupFailure(result) ? DogStateWire.startupFailureMessage(result)
+                    : "The TV could not finish Dog Mode. Check status before trying again.");
+        });
+    }
+    private void cancelInactiveDogRequest() {
+        DogOperation request = dogRequest;
+        if (request != null && (!current(request.operation) || !foreground)) {
+            finishDog(request, null, "Dog Mode confirmation cancelled. Check status on the TV again.");
+            dogBusy = false;
+            dogMode = "unknown";
+            dogNotice("Check Dog Mode status to confirm the TV's settings.");
+        }
+    }
 
     void requestPictureState(Completion completion) {
         pictureRequest(false, completion, completion != null, false);
@@ -595,6 +753,7 @@ final class RemoteEngine {
     }
 
     private void cancelInactivePictureRequests() {
+        cancelInactiveDogRequest();
         if (discoveryRecovery != null && !operationActive(discoveryRecovery.operation))
             discoveryRecovery.close();
         for (PictureOperation request : new HashSet<>(pictureRequests)) {

@@ -1,6 +1,6 @@
 # BareRemote for macOS
 
-A small native macOS remote for Android TV. Version **0.3.2 prototype (build 13)**, macOS
+A small native macOS remote for Android TV. Version **0.4.0 prototype (build 14)**, macOS
 **13 Ventura or newer**. SwiftUI/AppKit, Network, Security and CryptoKit; no
 third-party runtime dependencies, Java runtime, accounts, telemetry, polling,
 login item or background service. Includes a menu bar remote and a movable
@@ -52,7 +52,7 @@ in Edit Widgets. It is excluded from the normal app bundle. Developers can opt
 in with `BAREREMOTE_INCLUDE_WIDGETKIT=1 ./macos/build.sh`; this requires macOS 14+
 for the extension and does not replace the built-in desktop remote.
 
-**[Download the 0.3.2 prototype](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.2-prototype/BareRemote-macOS.zip)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.2-prototype).
+**[Download the 0.4.0 prototype](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.0-prototype/BareRemote-macOS.zip)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.0-prototype).
 
 The build uses the explicitly selected `BAREREMOTE_SIGN_IDENTITY`, or a locally
 saved selection in `.keys/macos-signing-identity`. Without either it uses an ad
@@ -120,6 +120,20 @@ A different or reset TV requires **Pair with a TV code**.
 **Forget TV** removes this Mac's saved connection. It keeps the Mac's Keychain
 identity and does not remove trust from the TV. Normal app rebuilds and updates
 retain the pairing.
+
+## Settings and Dog Mode
+
+TV Setup groups Television, Dog Mode, remote controls, Updates and Advanced in a
+scrolling page with a fixed Done button. Pairing and manual address controls
+expand when needed; errors appear beside their controls.
+
+Dog Mode starts NS NOW / CANAL 10 and temporarily disables supported TV power-off
+timers. Ending it restores the exact previous settings and returns Home. It
+continues on the TV after you close BareRemote. This requires BareHome 1.4 on
+the supported CSV4K, its protected-settings access and explicit one-time consent
+for the NS NOW Accessibility helper. The helper acts only during Dog Mode and
+is disabled on exit. NS NOW requires USB debugging to be off. Use Check status
+or Restore settings & exit after an uncertain result. See [setup and recovery](../docs/DOG_MODE.md).
 
 ## Controls
 
@@ -343,3 +357,14 @@ installed app normally found the TV at its current address, reconnected and
 saved the working address without a manual scan or pairing code. The original
 certificate, name and owner-only file permissions were retained, and the app
 showed Connected. No TV network settings were changed.
+
+
+Version **0.4.0** reorganizes Settings and adds TV-confirmed Dog Mode with
+BareHome 1.4. **105 tests pass**: 97 normal tests (including signed updater
+fixtures) and eight actual Keychain mutual-TLS loopback tests. The signed
+universal build was installed in Applications with its existing pairing. On the
+CSV4K with NS NOW 1.1.266, the owner confirmed CANAL 10 playback after Start and
+BareHome after End; authenticated state confirmed activation and exact energy
+restoration/helper removal. Only arm64 was executed. The three-hour prompt and
+long-duration playback remain physically untested. See the
+[Dog Mode validation record](../docs/DOG_MODE.md#physical-validation--2026-10-23).

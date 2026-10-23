@@ -7,15 +7,15 @@ Build it with `./macos/build.sh` and open `build/macos/BareRemote.app`. It uses 
 own Keychain pairing identity and supports the same TV controls, local discovery,
 TV text entry, keyboard navigation, hold-to-repeat, and BareHome picture
 confirmation, plus a menu bar remote, movable desktop remote and manual
-**Check for Updates**. Version 0.3.2 (build 13) requires macOS 13+.
+**Check for Updates**. Version 0.4.0 (build 14) requires macOS 13+.
 The desktop prototype has separate validation and versioning from
 the Android releases below.
 
-**[Download macOS 0.3.2](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.2-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.2-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
+**[Download macOS 0.4.0](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.0-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.0-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
 
-**Prototype, version 0.6.3 (code 14).** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; releases remain prereleases.
+**Prototype, version 0.7.0 (code 15).** Android 8+; targets Android 15. Ordinary remote controls do not require the separate [BareHome TV launcher](https://github.com/nicolas-mvd/barehome). Dog Mode requires BareHome 1.4 and its one-time TV setup. Compatibility checks are listed below; releases remain prereleases.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.6.3-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.6.3-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.7.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.7.0-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
@@ -57,6 +57,27 @@ the app leaves the screen. There are no background scans or subnet port sweeps.
 Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. Hold a **direction or volume button** in the app to repeat presses: the first press sends immediately, then repetition starts after 400 ms, up to roughly eight presses per second. Releasing, dragging off the pad or volume button, leaving the app, or a connection error stops repetition. A held button never reconnects automatically after a failure. Hold **OK** for a long press, including BareHome’s mode editor. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
 
 If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection using the existing pairing. From Android 0.6.3 and macOS 0.3.2, an unreachable saved address triggers one short local discovery scan. BareRemote checks discovered addresses against the saved TV certificate, reconnects to the same TV, and saves its new address automatically. Opening the remote or starting a new app/widget connection uses the same recovery. No TV code or manual scan is needed when discovery finds the paired TV. If discovery is blocked or the TV is off, the app reports the failure and manual Setup remains available. There are no idle scans; a key, text commit or toggle whose delivery is uncertain is never sent again.
+
+## Settings and Dog Mode
+
+Settings groups Television, Dog Mode, remote/widget controls, Updates and Advanced.
+Pairing and manual address entry expand when needed. Connection errors stay
+beside the TV controls, and Forget TV asks for confirmation.
+
+Dog Mode opens **NS NOW → CANAL 10** and temporarily disables the supported TV's
+sleep, inactivity and no-signal power-off timers. **End Dog Mode** restores the
+exact saved settings and returns Home. The TV owns the recovery record, so you
+can close BareRemote or use another paired phone or Mac to end it. If a reply
+is lost, use **Check status** or **Restore settings & exit**; requests are never
+automatically repeated.
+
+This requires BareHome 1.4 on the tested CSV4K Android 11 TV, protected-settings
+access and explicit one-time consent for its NS NOW Accessibility helper. The
+helper selects CANAL 10 and answers NS NOW's three-hour continuation prompt only
+while Dog Mode is running; it is disabled on exit. NS NOW requires USB debugging
+to be off. Other TVs or changed NS NOW layouts can report unavailable. A channel
+selection confirmation does not prove uninterrupted video playback. See
+[Dog Mode setup, recovery and validation](docs/DOG_MODE.md).
 
 ## Type on your TV
 
@@ -323,3 +344,11 @@ emulator’s real Keystore/TLS identity and native app input against the loopbac
 TV. Recovery-specific tests cover wrong pins, new addresses, cancellation,
 failed saves, candidate limits, expired commands and no duplicate delivery.
 No physical TV address was changed for these checks.
+
+
+Version **0.7.0** reorganizes Settings and adds TV-confirmed Dog Mode with
+BareHome 1.4. Its eight host suites pass **1,450 assertions**, including guarded
+startup, intermediate/final replies, restoration, cancellation, diagnostics and
+no replay of uncertain commands. The shared TV path was physically checked
+through the Mac client; no physical Android phone was used. See the
+[Dog Mode validation and limits](docs/DOG_MODE.md#physical-validation--2026-10-23).

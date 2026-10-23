@@ -124,6 +124,28 @@ final class PictureStateClient {
     void close() { closed = true; ready.countDown(); }
 }
 """,
+    "uy/nico/bareremote/DogStateClient.java": """
+package uy.nico.bareremote;
+import java.io.*;
+import java.util.concurrent.*;
+final class DogStateClient {
+    final BlockingQueue<String> replies = new LinkedBlockingQueue<>();
+    volatile boolean closed;
+    final int timeout;
+    DogStateClient(int timeout) { this.timeout=timeout; }
+    String await(boolean waitForFinal, java.util.function.Consumer<String> progress) throws Exception {
+        for (;;) {
+            String state=replies.poll(8, TimeUnit.SECONDS);
+            if (closed) throw new IOException("Closed");
+            if (state==null) throw new java.net.SocketTimeoutException();
+            if (waitForFinal && "starting".equals(state)) { if(progress!=null) progress.accept(state); }
+            else return state;
+        }
+    }
+    void reply(String value) { replies.offer(value); }
+    void close() { closed=true; replies.offer("closed"); }
+}
+""",
     "uy/nico/bareremote/TvDiscovery.java": """
 package uy.nico.bareremote;
 final class TvDiscovery {
@@ -184,6 +206,10 @@ final class TvProtocol {
         static volatile boolean blockWrite, holdPictureReplies, unsupportedPicture;
         static volatile String failHost, pinRejectHost;
         static final java.util.List<PictureStateClient> pictureRequests = new CopyOnWriteArrayList<>();
+        static volatile boolean holdDogReplies, unsupportedDog;
+        static final java.util.List<DogStateClient> dogRequests = new CopyOnWriteArrayList<>();
+        static final java.util.List<String> dogActions = new CopyOnWriteArrayList<>();
+        static final java.util.List<String> dogSetups = new CopyOnWriteArrayList<>();
         static final java.util.List<Boolean> pictureToggles = new CopyOnWriteArrayList<>();
         interface KeyboardListener { void changed(KeyboardState state); }
         volatile KeyboardListener keyboardListener;
@@ -248,9 +274,23 @@ final class TvProtocol {
             pictureRequests.add(client); pictureToggles.add(toggle);
             if (!holdPictureReplies) client.reply(toggle ? "night" : "day");
         }
+        void sendDogSetup() throws Exception {
+            if (!open) throw new java.io.IOException("Closed");
+            if (blockWrite) { blockWrite=false; writeEntered.countDown(); closed.await(); throw new java.io.IOException("Closed while writing"); }
+            dogSetups.add("barehome://dog/setup");
+        }
+        void awaitCommandDeliveryWindow() throws Exception { if (!open) throw new java.io.IOException("Closed"); }
+        DogStateClient openDogStateRequest(int timeout) {
+            if (unsupportedDog) throw new UnsupportedOperationException("Dog Mode unsupported");
+            return new DogStateClient(timeout);
+        }
+        void sendDogStateRequest(DogStateClient client, String action) {
+            dogRequests.add(client); dogActions.add(action);
+            if (!holdDogReplies) client.reply("start".equals(action) ? "active" : "off");
+        }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { budgets.clear(); readyHook=null; connections.clear(); texts.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
+        static void reset() { budgets.clear(); readyHook=null; connections.clear(); texts.clear(); keys.clear(); modes.clear(); inputs.clear(); dogRequests.clear(); dogActions.clear(); dogSetups.clear(); holdDogReplies=false; unsupportedDog=false; pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
     }
 }
 """,
@@ -269,6 +309,7 @@ class EngineTest(unittest.TestCase):
                 sources.append(str(path))
             sources += [str(ROOT / "app/src/main/java/uy/nico/bareremote/RemoteEngine.java"),
                         str(ROOT / "app/src/main/java/uy/nico/bareremote/PictureStateWire.java"),
+                        str(ROOT / "app/src/main/java/uy/nico/bareremote/DogStateWire.java"),
                         str(ROOT / "app/src/main/java/uy/nico/bareremote/KeyboardState.java"),
                         str(ROOT / "app/src/main/java/uy/nico/bareremote/KeyboardSession.java"),
                         str(ROOT / "app/src/main/java/uy/nico/bareremote/Proto.java"),

@@ -64,6 +64,9 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private EditText codeInput;
     private TvDiscovery discovery;
     private TextView discoverySelection;
+    private TextView setupConnectionStatus, setupConnectionError, setupDogStatus;
+    private Button setupDogAction, setupDogCheck, setupDogSetup, setupForget;
+    private final List<View> setupConnectionActions = new ArrayList<>();
     private boolean resumed;
     private boolean pendingSetup;
     private boolean pendingCode;
@@ -419,114 +422,158 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         dismissCode();
         LinearLayout body = dialogBody();
         setupActions.clear();
+        setupConnectionActions.clear();
         if (engine.needsPairingUpgrade()) {
             TextView upgrade = text(RemoteEngine.PAIRING_UPGRADE_MESSAGE
-                    + " Your TV address is saved. Tap Pair and enter the new TV code on each updated phone.", 15, WHITE);
+                    + " Your TV address is saved. Pair using a new TV code on each updated phone.", 15, WHITE);
             upgrade.setPadding(0, 0, 0, dp(12));
             body.addView(upgrade);
         }
         if (pairingInterrupted) {
-            TextView interrupted = text("Pairing stopped when the app left the screen. Tap Pair to request a new code.", 14, WHITE);
+            TextView interrupted = text("Pairing stopped when the app left the screen. Pair again to request a new code.", 14, WHITE);
             interrupted.setPadding(0, 0, 0, dp(12));
             body.addView(interrupted);
         }
-        body.addView(text(engine.isPaired()
-                ? "Connect your phone and TV to the same network. Scan to reconnect your saved TV, or enter its IP address and tap Reconnect."
-                : "Connect your phone and TV to the same network. Scan for your TV, or enter its IP address below.", 15, WHITE));
+
+        LinearLayout television = settingsSection(body, "Television");
+        TextView saved = text(engine.hasSavedTv() ? (engine.isPaired() ? "Paired TV · " : "Saved TV · ") + safeHost() : "Add your TV", 17, WHITE);
+        saved.setTypeface(null, Typeface.BOLD);
+        television.addView(saved);
+        addSettingsNote(television, "Keep your phone and TV on the same network.");
+        setupConnectionStatus = text(stateText.getText().toString(), 14, MUTED);
+        setupConnectionStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        setupConnectionStatus.setPadding(0, dp(10), 0, 0);
+        television.addView(setupConnectionStatus);
+        setupConnectionError = text(errorText.getText().toString(), 14, 0xffffb36b);
+        setupConnectionError.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        setupConnectionError.setVisibility(errorText.getVisibility());
+        television.addView(setupConnectionError);
+        LinearLayout connectionButtons = row();
         Button scan = button("Scan for TVs", "Scan the local network for Android TVs");
         scan.setOnClickListener(v -> showDiscovery());
-        LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(-1, dp(48));
-        scanParams.topMargin = dp(12);
-        body.addView(scan, scanParams);
+        connectionButtons.addView(scan, new LinearLayout.LayoutParams(0, dp(48), 1));
         setupActions.add(scan);
+        setupConnectionActions.add(scan);
+        if (engine.isPaired()) {
+            Button reconnect = button("Reconnect", "Reconnect to saved TV and find its new address if needed");
+            reconnect.setOnClickListener(v -> { clearError(); engine.reconnect(); });
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
+            params.leftMargin = dp(8);
+            connectionButtons.addView(reconnect, params);
+            setupActions.add(reconnect);
+            setupConnectionActions.add(reconnect);
+        }
+        LinearLayout.LayoutParams connectionParams = new LinearLayout.LayoutParams(-1, -2);
+        connectionParams.topMargin = dp(12);
+        television.addView(connectionButtons, connectionParams);
+        if (engine.isPaired()) addSettingsNote(television,
+                "Reconnect looks for your paired TV automatically if its IP address changes.");
         discoverySelection = text("", 13, GREEN);
         discoverySelection.setVisibility(View.GONE);
         discoverySelection.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
-        body.addView(discoverySelection);
+        television.addView(discoverySelection);
+
+        LinearLayout connectionOptions = column();
+        connectionOptions.setPadding(0, dp(8), 0, 0);
+        connectionOptions.addView(text("TV IP address", 13, MUTED));
         hostInput = new EditText(this);
         hostInput.setSingleLine(true);
         hostInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
-        hostInput.setHint("TV IP address");
+        hostInput.setHint("192.168.1.10");
         hostInput.setTextColor(WHITE);
         hostInput.setHintTextColor(MUTED);
         hostInput.setContentDescription("TV IPv4 address");
         hostInput.setFilters(new InputFilter[] {new InputFilter.LengthFilter(253)});
         hostInput.setText(hostDraft.isEmpty() ? safeHost() : hostDraft);
         hostInput.setSelectAllOnFocus(true);
-        body.addView(hostInput, new LinearLayout.LayoutParams(-1, dp(56)));
+        connectionOptions.addView(hostInput, new LinearLayout.LayoutParams(-1, dp(56)));
         setupActions.add(hostInput);
-        TextView note = text(engine.isPaired()
-                ? "Reconnect keeps your pairing. A different or reset TV may need a new TV code."
-                : "The TV will show a pairing code. Each phone pairs separately.", 13, MUTED);
-        note.setPadding(0, dp(8), 0, 0);
-        body.addView(note);
+        setupConnectionActions.add(hostInput);
+        Button addressAction = button(engine.isPaired() ? "Use this address" : "Pair with TV",
+                engine.isPaired() ? "Check saved TV identity at this address" : "Request a pairing code on the TV");
+        addressAction.setOnClickListener(v -> {
+            if (engine.isPaired()) reconnectSetupAddress();
+            else pairSetupAddress();
+        });
+        connectionOptions.addView(addressAction, new LinearLayout.LayoutParams(-1, dp(48)));
+        setupActions.add(addressAction);
+        setupConnectionActions.add(addressAction);
         if (engine.isPaired()) {
-            Button pairCode = button("Pair with a TV code", "Pair a different or reset TV using its TV code");
+            addSettingsNote(connectionOptions, "Use this address checks your saved TV’s identity. A different or reset TV needs a new code.");
+            Button pairCode = button("Pair with a new TV code", "Pair a different or reset TV using its TV code");
             pairCode.setOnClickListener(v -> pairSetupAddress());
-            LinearLayout.LayoutParams pairParams = new LinearLayout.LayoutParams(-1, dp(48));
-            pairParams.topMargin = dp(12);
-            body.addView(pairCode, pairParams);
-            setupActions.add(pairCode);
+            addSettingsAction(connectionOptions, pairCode);
+            setupConnectionActions.add(pairCode);
+            addSettingsDisclosure(television, "Change address or pair a TV", connectionOptions);
+        } else {
+            addSettingsNote(connectionOptions, "Select your TV after scanning, or enter its address. It will show a six-character code. Each phone pairs separately.");
+            television.addView(connectionOptions);
         }
-        TextView modes = text("The sun or moon shows the last TV-confirmed Day or Night preset. Tap it to switch. Sync checks the TV again. A question mark means the mode is unknown or its levels were changed elsewhere. Requires BareHome 1.2 with picture controls enabled. The PlayStation button opens the TV’s source menu.", 13, MUTED);
-        modes.setPadding(0, dp(16), 0, dp(12));
-        body.addView(modes);
-        LinearLayout extras = row();
+
+        LinearLayout dog = settingsSection(body, "Dog Mode");
+        TextView channel = text("NS NOW · CANAL 10", 17, WHITE);
+        channel.setTypeface(null, Typeface.BOLD);
+        dog.addView(channel);
+        addSettingsNote(dog, "Keeps the TV on while you’re out. Ending Dog Mode restores its previous energy settings and opens Home.");
+        addSettingsNote(dog, "One-time setup in BareHome on the TV is required. NS NOW requires USB debugging to be off.");
+        setupDogStatus = text("", 14, MUTED);
+        setupDogStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        setupDogStatus.setPadding(0, dp(12), 0, dp(8));
+        dog.addView(setupDogStatus);
+        setupDogAction = button("Start Dog Mode", "Start Dog Mode on the TV");
+        setupDogAction.setOnClickListener(v -> {
+            if ("off".equals(engine.dogMode())) engine.startDogMode();
+            else if ("active".equals(engine.dogMode()) || "starting".equals(engine.dogMode()) || "restore_required".equals(engine.dogMode())
+                    || "unknown".equals(engine.dogMode()) || "error".equals(engine.dogMode())
+                    || DogStateWire.isStartupFailure(engine.dogMode())) engine.stopDogMode();
+        });
+        dog.addView(setupDogAction, new LinearLayout.LayoutParams(-1, -2));
+        setupDogCheck = button("Check status", "Ask the TV for its current Dog Mode state");
+        setupDogCheck.setOnClickListener(v -> engine.refreshDogMode());
+        LinearLayout.LayoutParams checkParams = new LinearLayout.LayoutParams(-1, dp(48));
+        checkParams.topMargin = dp(8);
+        dog.addView(setupDogCheck, checkParams);
+        setupDogSetup = button("Set up on TV", "Open the Dog Mode setup prompt on the TV");
+        setupDogSetup.setOnClickListener(v -> engine.openDogSetup());
+        LinearLayout.LayoutParams setupParams = new LinearLayout.LayoutParams(-1, dp(48));
+        setupParams.topMargin = dp(8);
+        dog.addView(setupDogSetup, setupParams);
+
+        LinearLayout controls = settingsSection(body, "Remote & widgets");
+        TextView pictureLabel = text("Day / Night and inputs", 15, WHITE);
+        pictureLabel.setTypeface(null, Typeface.BOLD);
+        controls.addView(pictureLabel);
+        addSettingsNote(controls, "The sun or moon shows the last TV-confirmed picture preset. A question mark means it is unconfirmed. Sync checks again. Requires BareHome picture controls. The PlayStation button opens the TV’s source menu.");
         Button widget = button("Add widget", "Add a remote widget to your home screen");
         widget.setOnClickListener(v -> { pendingSetup = false; dismissSetup(); addWidget(); });
-        extras.addView(widget, new LinearLayout.LayoutParams(0, dp(48), 1));
-        setupActions.add(widget);
-        Button playback = button("Play / Pause", "Play or pause");
+        addSettingsAction(controls, widget);
+        Button playback = button("Play / Pause", "Play or pause TV playback");
         playback.setEnabled(engine.isPaired());
         playback.setOnClickListener(v -> { clearError(); engine.sendKey(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE); });
-        LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(0, dp(48), 1);
-        playParams.leftMargin = dp(8);
-        extras.addView(playback, playParams);
-        setupActions.add(playback);
-        body.addView(extras);
-        TextView widgetNote = text("The widget stays connected for 1 minute after each tap, with a temporary notification. Open the app to hold directions or volume for repeated presses, or OK for a long press.", 12, MUTED);
-        widgetNote.setPadding(0, dp(10), 0, dp(4));
-        body.addView(widgetNote);
+        addSettingsAction(controls, playback);
+        addSettingsNote(controls, "The widget connects for 1 minute after each tap. Use the app to hold directions, volume or OK.");
+
+        LinearLayout app = settingsSection(body, "App updates");
+        app.addView(text(installedVersion(), 13, MUTED));
         Button updates = button("Check for updates", "Check for a BareRemote update");
-        updates.setOnClickListener(v -> {
-            pendingSetup = false;
-            dismissSetup();
-            AppUpdates.open(this);
-        });
-        LinearLayout.LayoutParams updateParams = new LinearLayout.LayoutParams(-1, dp(48));
-        updateParams.topMargin = dp(12);
-        body.addView(updates, updateParams);
-        setupActions.add(updates);
-        TextView version = text(installedVersion(), 12, MUTED);
-        version.setPadding(0, dp(8), 0, dp(8));
-        body.addView(version);
+        updates.setOnClickListener(v -> { pendingSetup = false; dismissSetup(); AppUpdates.open(this); });
+        addSettingsAction(app, updates);
+
+        LinearLayout advanced = column();
+        advanced.setPadding(0, dp(8), 0, dp(12));
+        addSettingsNote(advanced, "Forgetting removes only this phone’s saved pairing. Other remotes are unaffected.");
         if (engine.hasSavedTv()) {
-            Button forget = button("Forget TV", "Remove this phone’s saved TV pairing");
-            forget.setOnClickListener(v -> {
-                pendingSetup = false;
-                pendingCode = false;
-                pairingInProgress = false;
-                pairingInterrupted = false;
-                hostDraft = "";
-                codeDraft = "";
-                if (hostInput != null) hostInput.setText("");
-                engine.forget();
-                refreshTarget();
-                enableControls(false);
-                setupDialog.dismiss();
-            });
-            LinearLayout.LayoutParams forgetParams = new LinearLayout.LayoutParams(-1, dp(48));
-            forgetParams.topMargin = dp(8);
-            forgetParams.bottomMargin = dp(12);
-            body.addView(forget, forgetParams);
-            setupActions.add(forget);
+            setupForget = button("Forget TV…", "Remove this phone’s saved TV pairing");
+            setupForget.setOnClickListener(v -> confirmForgetTv());
+            addSettingsAction(advanced, setupForget);
         }
+        addSettingsDisclosure(body, "Advanced", advanced);
+
         ScrollView setupScroll = new ScrollView(this);
         setupScroll.addView(body);
         setupDialog = new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
-                .setTitle("Setup").setView(setupScroll)
-                .setPositiveButton(engine.isPaired() ? "Reconnect" : "Pair", null)
-                .setNegativeButton("Cancel", (dialog, which) -> pendingSetup = false)
+                .setTitle("Settings").setView(setupScroll)
+                .setPositiveButton("Done", (dialog, which) -> pendingSetup = false)
                 .create();
         setupDialog.setOnCancelListener(dialog -> pendingSetup = false);
         setupDialog.setOnDismissListener(dialog -> {
@@ -536,16 +583,105 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             setupDialog = null;
             hostInput = null;
             discoverySelection = null;
+            setupConnectionStatus = null;
+            setupConnectionError = null;
+            setupDogStatus = null;
+            setupDogAction = null;
+            setupDogCheck = null;
+            setupDogSetup = null;
+            setupForget = null;
             setupActions.clear();
-        });
-        setupDialog.setOnShowListener(dialog -> {
-            setupDialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
-                if (engine.isPaired()) reconnectSetupAddress();
-                else pairSetupAddress();
-            });
+            setupConnectionActions.clear();
         });
         setupDialog.show();
+        refreshSetupDogMode();
+        if (engine.isPaired()) engine.refreshDogMode();
     }
+
+    private LinearLayout settingsSection(LinearLayout body, String title) {
+        TextView heading = text(title, 16, WHITE);
+        heading.setTypeface(null, Typeface.BOLD);
+        if (Build.VERSION.SDK_INT >= 28) heading.setAccessibilityHeading(true);
+        heading.setPadding(0, dp(20), 0, dp(10));
+        body.addView(heading);
+        LinearLayout card = column();
+        card.setPadding(dp(14), dp(14), dp(14), dp(14));
+        card.setBackground(roundFill(0xff252728, 12));
+        body.addView(card, new LinearLayout.LayoutParams(-1, -2));
+        return card;
+    }
+
+    private void addSettingsNote(LinearLayout body, String value) {
+        TextView note = text(value, 13, MUTED);
+        note.setPadding(0, dp(8), 0, dp(4));
+        body.addView(note);
+    }
+
+    private void addSettingsAction(LinearLayout body, Button action) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(8);
+        body.addView(action, params);
+        setupActions.add(action);
+    }
+
+    private void addSettingsDisclosure(LinearLayout body, String title, LinearLayout content) {
+        Button disclosure = button(title + "  ▾", title);
+        content.setVisibility(View.GONE);
+        disclosure.setOnClickListener(v -> {
+            boolean open = content.getVisibility() != View.VISIBLE;
+            content.setVisibility(open ? View.VISIBLE : View.GONE);
+            disclosure.setText(title + (open ? "  ▴" : "  ▾"));
+        });
+        addSettingsAction(body, disclosure);
+        body.addView(content, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    private void confirmForgetTv() {
+        new AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog_Alert)
+                .setTitle("Forget this TV on this phone?")
+                .setMessage("You will need a new TV code to pair this phone again. Other remotes keep their pairing.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Forget TV", (dialog, which) -> {
+                    if (engine.dogBusy() || "active".equals(engine.dogMode()) || "starting".equals(engine.dogMode()) || "restore_required".equals(engine.dogMode())) return;
+                    pendingSetup = false;
+                    pendingCode = false;
+                    pairingInProgress = false;
+                    pairingInterrupted = false;
+                    hostDraft = "";
+                    codeDraft = "";
+                    if (hostInput != null) hostInput.setText("");
+                    engine.forget();
+                    refreshTarget();
+                    enableControls(false);
+                    dismissSetup();
+                }).show();
+    }
+
+    private void refreshSetupDogMode() {
+        if (setupDogStatus == null) return;
+        String mode = engine.dogMode();
+        boolean busy = engine.dogBusy();
+        boolean paired = engine.isPaired();
+        setupDogStatus.setText(paired ? engine.dogStatus() : "Pair your TV above to use Dog Mode.");
+        setupDogStatus.setTextColor("active".equals(mode) ? GREEN
+                : "restore_required".equals(mode) || "error".equals(mode) || DogStateWire.isStartupFailure(mode) ? 0xffffb36b : MUTED);
+        boolean actionable = "off".equals(mode) || "active".equals(mode) || "starting".equals(mode) || "restore_required".equals(mode)
+                || "unknown".equals(mode) || "error".equals(mode) || DogStateWire.isStartupFailure(mode);
+        setupDogAction.setVisibility(actionable ? View.VISIBLE : View.GONE);
+        setupDogAction.setText("off".equals(mode) ? "Start Dog Mode"
+                : "active".equals(mode) ? "End Dog Mode" : "Restore settings & exit");
+        setupDogAction.setContentDescription(setupDogAction.getText());
+        setupDogAction.setEnabled(paired && !busy && !addressReconnectInProgress);
+        setupDogCheck.setEnabled(paired && !busy && !addressReconnectInProgress);
+        setupDogCheck.setText("Check status");
+        setupDogSetup.setVisibility(paired ? View.VISIBLE : View.GONE);
+        setupDogSetup.setEnabled(paired && !busy && !addressReconnectInProgress);
+        for (View action : setupConnectionActions) action.setEnabled(!busy && !addressReconnectInProgress);
+        if (setupForget != null) setupForget.setEnabled(!busy && !addressReconnectInProgress
+                && !"active".equals(mode) && !"starting".equals(mode) && !"restore_required".equals(mode));
+    }
+
+    @Override public void onDogMode() { refreshSetupDogMode(); }
 
     private String setupAddress() {
         if (hostInput == null || addressReconnectInProgress) return null;
@@ -604,8 +740,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     private void setSetupBusy(boolean busy) {
         for (View action : setupActions) action.setEnabled(!busy);
-        if (setupDialog == null) return;
-        setupDialog.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(!busy);
+        refreshSetupDogMode();
     }
 
     private void cancelAddressReconnect() {
@@ -837,6 +972,10 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     @Override public void onState(String state, boolean paired) {
         stateText.setText(state);
+        if (setupConnectionStatus != null) setupConnectionStatus.setText(state);
+        if ("Connected".equals(state) || "Connecting…".equals(state)
+                || "Looking for your TV…".equals(state) || "Checking saved TV…".equals(state)
+                || "Requesting TV code…".equals(state) || "Pairing…".equals(state)) clearError();
         refreshTarget();
         refreshPictureMode();
         enableControls(paired);
@@ -872,9 +1011,14 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         pairingInProgress = false;
         refreshSync();
         stateText.setText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE
-                : engine.isPaired() ? "TV saved" : "Pair your TV in Setup");
+                : engine.isPaired() ? "Disconnected" : "Pair your TV in Setup");
+        if (setupConnectionStatus != null) setupConnectionStatus.setText(stateText.getText());
         errorText.setText("Error: " + message);
         errorText.setVisibility(View.VISIBLE);
+        if (setupConnectionError != null) {
+            setupConnectionError.setText(message);
+            setupConnectionError.setVisibility(View.VISIBLE);
+        }
         if (codeInput != null) {
             codeInput.setEnabled(true);
             codeInput.setError(message);
@@ -929,7 +1073,10 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         syncButton.setAlpha(enabled ? 1f : .38f);
     }
 
-    private void clearError() { errorText.setVisibility(View.GONE); }
+    private void clearError() {
+        errorText.setVisibility(View.GONE);
+        if (setupConnectionError != null) setupConnectionError.setVisibility(View.GONE);
+    }
 
     private void dismissSetup() { if (setupDialog != null) setupDialog.dismiss(); }
 

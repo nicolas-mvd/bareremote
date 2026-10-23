@@ -317,6 +317,20 @@ public final class TvProtocol {
             sendBareHomeLink(request.request(toggle));
         }
 
+        void sendDogSetup() throws IOException {
+            sendBareHomeLink("barehome://dog/setup");
+        }
+
+        DogStateClient openDogStateRequest(int timeoutMillis) throws IOException {
+            if ((features & 512) == 0)
+                throw new UnsupportedOperationException("This TV remote service does not support BareHome commands.");
+            return DogStateClient.open(socket.getLocalAddress(), socket.getInetAddress(), timeoutMillis);
+        }
+
+        void sendDogStateRequest(DogStateClient request, String action) throws IOException {
+            sendBareHomeLink(request.request(action));
+        }
+
         private void sendBareHomeLink(String link) throws IOException {
             synchronized (keyLock) {
                 if ((features & 512) == 0) {

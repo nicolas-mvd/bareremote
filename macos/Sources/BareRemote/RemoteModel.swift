@@ -35,6 +35,11 @@ final class OperationGate: @unchecked Sendable {
     @Published var setupOpen = false
     @Published var pictureState = "unknown"
     @Published var pictureBusy = false
+    @Published var dogMode = "unknown"
+    @Published var dogBusy = false
+    @Published var dogStatus = "Check status to read Dog Mode from your TV."
+    private var dogSequence = 0
+    private let dogReplies = DispatchQueue(label: "uy.nico.bareremote.dog", qos: .userInitiated)
     @Published var keyboardMode = false
     @Published private(set) var keyboardState: TVKeyboardState?
     @Published var keyboardNotice = ""
@@ -230,13 +235,18 @@ final class OperationGate: @unchecked Sendable {
         idleWork?.cancel(); idleWork = nil; sessionLeaseUntil = 0; shortcutQueue.removeAll()
         pairing = nil; remote = nil; connected = false; awaitingCode = false
         busy = false; pending = 0; pictureBusy = false; pictureState = "unknown"
+        dogSequence += 1; dogMode = "unknown"; dogBusy = false
+        dogStatus = "Check status to confirm Dog Mode on your TV."
         needsLocalNetworkAccess = false
         keyboardState = nil; keyboardMode = false; keyboardNotice = ""
         keyboardShowRequest = 0; keyboardRemoteOverride = nil
         invalidateKeyboardInput()
     }
     func disconnect() { reset(); status = saved == nil ? "Add your TV to get started" : "Disconnected" }
-    func openSetup() { disconnect(); detail = ""; host = saved?.host ?? host; tvName = saved?.name ?? tvName; setupOpen = true }
+    func openSetup() {
+        disconnect(); detail = ""; host = saved?.host ?? host; tvName = saved?.name ?? tvName; setupOpen = true
+        refreshDogMode()
+    }
     func closeSetup() {
         reset(); setupOpen = false; code = ""
         if saved != nil { sync() }
@@ -288,12 +298,24 @@ final class OperationGate: @unchecked Sendable {
             } catch { self.report(error, revision: revision) }
         }
     }
-    func sync() { guard let saved else { openSetup(); return }; connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true) }
+    func sync() {
+        guard let saved else { openSetup(); return }
+        connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true,
+                keepSetupOpen: setupOpen, dogAfterConnect: setupOpen ? "state" : nil)
+    }
     func reconnect() { connect(to: host.trimmingCharacters(in: .whitespacesAndNewlines), name: tvName, saveAddress: true) }
-    private func connect(to address: String, name: String, saveAddress: Bool, recoverAddress: Bool = false) {
+    private func connect(to address: String, name: String, saveAddress: Bool, recoverAddress: Bool = false,
+                         keepSetupOpen: Bool = false, dogAfterConnect: String? = nil) {
         guard let saved else { return }
         guard validateAddress(address) else { return }
         reset(); busy = true; status = "Connecting…"; detail = ""
+        if dogAfterConnect != nil {
+            dogBusy = true
+            dogStatus = dogAfterConnect == "setup" ? "Connecting to open Dog Mode setup…" : "Connecting to check Dog Mode…"
+            // Settings can open during the menu-to-window handoff, before a surface
+            // owns this connection. Keep that explicit bounded operation alive.
+            touchSessionLease()
+        }
         let token = gate, revision = generation
         // This private browser never changes Setup's explicit scan or trusts
         // its labels. The gate stops it even if a main-thread start is delayed.
@@ -339,20 +361,29 @@ final class OperationGate: @unchecked Sendable {
                         session.onDisconnect = { [weak self] in
                             DispatchQueue.main.async {
                                 guard let self, self.generation == revision else { return }
+                                let dogPending = self.dogBusy
                                 self.reset(); self.status = "Disconnected · press Sync to reconnect"
+                                if dogPending {
+                                    self.dogStatus = "The TV connection closed before Dog Mode was confirmed. Reconnect and check status; the request was not repeated."
+                                }
                             }
                         }
                         self.remote = session; self.connected = true; self.busy = false
                         session.onKeyboardStateChanged = { [weak self] state in
                             DispatchQueue.main.async { self?.receiveKeyboard(state, revision: revision) }
                         }
-                        self.setupOpen = false; self.status = "Connected"
+                        self.setupOpen = keepSetupOpen; self.status = "Connected"
                         // A queued toggle owns its one reply; do not race it with a startup query.
                         let hasToggle = self.shortcutQueue.contains { $0.action == .toggle }
                         self.flushShortcuts()
-                        if !hasToggle { self.refreshPicture(toggle: false) }
+                        if !hasToggle && !keepSetupOpen { self.refreshPicture(toggle: false) }
+                        if let dogAfterConnect { self.dogBusy = false; self.requestDogMode(dogAfterConnect) }
                         if self.surfaces.isEmpty { self.scheduleIdleDisconnect() }
-                    } catch { session.close(); self.busy = false; self.status = "Address was not saved"; self.detail = error.localizedDescription }
+                    } catch {
+                        session.close(); self.busy = false; self.dogBusy = false; self.dogMode = "unknown"
+                        self.dogStatus = "Could not verify the TV connection. Reconnect and check status again."
+                        self.status = "Address was not saved"; self.detail = error.localizedDescription
+                    }
                 }
             } catch { self.report(error, revision: revision) }
         }
@@ -402,6 +433,107 @@ final class OperationGate: @unchecked Sendable {
                 try remote.sendAppLink("barehome://inputs")
                 DispatchQueue.main.async { if self.generation == revision { self.pending = max(0, self.pending - 1) } }
             } catch { self.commandFailed(error, revision: revision) }
+        }
+    }
+    func openDogSetup() {
+        guard !dogBusy, !busy, !awaitingCode, let saved else { return }
+        if !connected {
+            connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true,
+                    keepSetupOpen: setupOpen, dogAfterConnect: "setup")
+            return
+        }
+        sendDogSetup()
+    }
+    private func sendDogSetup() {
+        guard connected, !busy, !dogBusy, let remote else { return }
+        touchSessionLease(); dogBusy = true; dogSequence += 1
+        dogStatus = "Opening Dog Mode setup on your TV…"
+        let revision = generation, sequence = dogSequence, token = gate
+        let deadline = ProcessInfo.processInfo.systemUptime + 7
+        worker.async {
+            do {
+                guard !token.cancelled else { return }
+                let remaining = deadline - ProcessInfo.processInfo.systemUptime
+                guard remaining > 0.75 else { throw TVProtocolError.timedOut }
+                try remote.sendAppLink("barehome://dog/setup", timeout: min(5, remaining - 0.75))
+                try remote.awaitCommandDeliveryWindow()
+                DispatchQueue.main.async {
+                    guard self.generation == revision, self.dogSequence == sequence, !token.cancelled else { return }
+                    self.dogBusy = false; self.dogMode = "unknown"
+                    self.dogStatus = "Follow the setup prompt on your TV, then choose Check status."
+                }
+            } catch { self.dogFailed(error, revision: revision, sequence: sequence) }
+        }
+    }
+    func refreshDogMode() {
+        guard !dogBusy, !busy, !awaitingCode, let saved else { return }
+        if !connected {
+            connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true,
+                    keepSetupOpen: setupOpen, dogAfterConnect: "state")
+            return
+        }
+        requestDogMode("state")
+    }
+    func startDogMode() {
+        guard dogMode == "off" else { dogStatus = "Check Dog Mode status before starting."; return }
+        requestDogMode("start")
+    }
+    func stopDogMode() {
+        guard ["active", "starting", "restore_required", "unknown", "error"].contains(dogMode) || DogStateWire.isStartupFailure(dogMode) else {
+            dogStatus = "Check Dog Mode status before restoring settings."; return
+        }
+        guard !dogBusy, !busy, !awaitingCode, let saved else { return }
+        if !connected {
+            connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true,
+                    keepSetupOpen: setupOpen, dogAfterConnect: "stop")
+            return
+        }
+        requestDogMode("stop")
+    }
+    private func requestDogMode(_ action: String) {
+        if action == "setup" { sendDogSetup(); return }
+        guard connected, !busy, !dogBusy, let remote, let local = remote.localAddress, let saved else { return }
+        touchSessionLease()
+        dogBusy = true
+        dogStatus = action == "state" ? "Checking Dog Mode on your TV…"
+            : action == "start" ? "Starting Dog Mode…" : "Restoring TV settings…"
+        dogSequence += 1
+        let revision = generation, sequence = dogSequence, token = gate
+        worker.async {
+            do {
+                guard !token.cancelled else { return }
+                let request = try DogStateRequest(localAddress: local, peer: saved.host, timeout: action == "start" ? 35 : 8)
+                token.own { request.close() }
+                try remote.sendAppLink(request.requestURL(action: action))
+                self.dogReplies.async {
+                    do {
+                        let state = try request.wait(waitForFinal: action == "start") { state in
+                            DispatchQueue.main.async {
+                                guard self.generation == revision, self.dogSequence == sequence, !token.cancelled else { return }
+                                self.dogMode = state
+                                self.dogStatus = "The TV is opening NS NOW and selecting CANAL 10. Waiting for confirmation…"
+                            }
+                        }
+                        DispatchQueue.main.async {
+                            guard self.generation == revision, self.dogSequence == sequence, !token.cancelled else { return }
+                            self.dogMode = state; self.dogBusy = false
+                            self.dogStatus = state == "off" ? "Dog Mode is off. TV energy settings are restored."
+                                : state == "starting" ? "The TV is still starting Dog Mode. Check status or restore settings to cancel."
+                                : state == "active" ? "Dog Mode is active on the TV. You can close BareRemote."
+                                : state == "restore_required" ? "TV energy settings need restoring. Choose Restore settings & exit."
+                                : state == "unavailable" ? "Open BareHome on the TV and complete its one-time Dog Mode setup."
+                                : DogStateWire.startupFailureMessage(state) ?? "The TV could not finish Dog Mode. Check status before trying again."
+                        }
+                    } catch { self.dogFailed(error, revision: revision, sequence: sequence) }
+                }
+            } catch { self.dogFailed(error, revision: revision, sequence: sequence) }
+        }
+    }
+    private nonisolated func dogFailed(_ error: Error, revision: Int, sequence: Int) {
+        DispatchQueue.main.async {
+            guard self.generation == revision, self.dogSequence == sequence else { return }
+            self.dogMode = "unknown"; self.dogBusy = false
+            self.dogStatus = "\(error.localizedDescription) Check status before trying again; the request was not repeated."
         }
     }
     func refreshPicture(toggle: Bool, deadline: TimeInterval? = nil) {
@@ -457,6 +589,10 @@ final class OperationGate: @unchecked Sendable {
                 if case .localNetworkDenied = $0 { return true }; return false
             } ?? false
             self.busy = false
+            if self.dogBusy {
+                self.dogBusy = false; self.dogMode = "unknown"
+                self.dogStatus = "Could not check Dog Mode. Reconnect and check status again."
+            }
             self.status = self.needsLocalNetworkAccess ? "Local Network access is blocked" : "Connection needs attention"
             self.detail = error.localizedDescription
         }

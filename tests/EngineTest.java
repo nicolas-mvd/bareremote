@@ -18,6 +18,14 @@ public final class EngineTest {
     private static int assertions;
 
     public static void main(String[] args) throws Exception {
+        dogConnectionStatusSettlesAfterRecovery();
+        dogSetupIsFixedForegroundCommand();
+        dogModeStartingQueryCanRestore();
+        dogModeRestoreWithoutConfirmedState();
+        dogModeConfirmationAndGuards();
+        dogModeStartupFailuresRequireFreshStatusAndAllowRestore();
+        dogModeCancellationAndTimeout();
+        dogModeUnavailableKeepsRemote();
         automaticAddressRecovery();
         automaticRecoveryOwnerCancellation();
         automaticRecoveryCandidateCancellation();
@@ -61,6 +69,197 @@ public final class EngineTest {
         changedAddressRejectsConcurrentControls();
         changedAddressCancelsOldCommands();
         System.out.println("Engine tests: " + assertions + " assertions passed");
+    }
+
+    private static void dogConnectionStatusSettlesAfterRecovery() throws Exception {
+        for (boolean reachable : new boolean[] {true, false}) {
+            RemoteEngine engine = engine();
+            try {
+                engine.resume(); idle(engine);
+                TvProtocol.Remote.connections.get(0).close();
+                TvProtocol.Remote.failHost = "192.0.2.1";
+                if (reachable) TvDiscovery.emit("192.0.2.9");
+                engine.refreshDogMode(); idle(engine); waitFor(() -> !engine.dogBusy());
+                check((reachable ? "Connected" : "Disconnected").equals(engine.status()),
+                        "Dog status query settles the TV connection after scanning: " + reachable);
+                check((reachable ? "off" : "unknown").equals(engine.dogMode()),
+                        "connection status never substitutes for Dog Mode confirmation: " + reachable);
+            } finally { shutdown(engine); }
+        }
+    }
+
+    private static void dogSetupIsFixedForegroundCommand() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.openDogSetup(); idle(engine);
+            check(TvProtocol.Remote.dogSetups.isEmpty(), "TV setup requires the foreground owner");
+            engine.resume(); idle(engine);
+            engine.openDogSetup(); idle(engine); waitFor(() -> !engine.dogBusy());
+            check(TvProtocol.Remote.dogSetups.equals(java.util.Arrays.asList("barehome://dog/setup")), "TV setup writes one fixed link");
+            check(TvProtocol.Remote.dogRequests.isEmpty() && TvProtocol.Remote.dogActions.isEmpty(), "Setup has no UDP callback or Dog Mode mutation");
+            check("unknown".equals(engine.dogMode()) && engine.dogStatus().contains("Follow the setup prompt"), "Setup write does not invent consent or activation");
+            TvProtocol.Remote.blockWrite = true; TvProtocol.Remote.writeEntered = new CountDownLatch(1);
+            engine.openDogSetup();
+            check(TvProtocol.Remote.writeEntered.await(1, TimeUnit.SECONDS), "uncertain setup write started");
+            Handler.advance(7000); idle(engine); waitFor(() -> !engine.dogBusy());
+            check(TvProtocol.Remote.dogSetups.size() == 1, "uncertain setup write is not replayed");
+            check("unknown".equals(engine.dogMode()), "uncertain setup cannot confirm consent or success");
+        } finally { shutdown(engine); }
+    }
+
+    private static void dogModeStartingQueryCanRestore() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            TvProtocol.Remote.holdDogReplies = true;
+            engine.refreshDogMode(); idle(engine);
+            TvProtocol.Remote.dogRequests.get(0).reply("starting"); waitFor(() -> !engine.dogBusy());
+            check("starting".equals(engine.dogMode()), "another client can observe TV startup without claiming active");
+            engine.startDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state")), "starting cannot start a second transaction");
+            engine.stopDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "stop")), "observed startup offers explicit cancellation and restore");
+            TvProtocol.Remote.dogRequests.get(1).reply("off"); waitFor(() -> !engine.dogBusy());
+            check("off".equals(engine.dogMode()), "startup cancellation confirms exact restoration only from reply");
+        } finally { shutdown(engine); }
+    }
+
+    private static void dogModeRestoreWithoutConfirmedState() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            TvProtocol.Remote.holdDogReplies = true;
+            engine.stopDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("stop")),
+                    "explicit safe restore works without a state reply");
+            check("unknown".equals(engine.dogMode()) && engine.dogBusy(),
+                    "unconfirmed restore cannot claim off");
+            TvProtocol.Remote.dogRequests.get(0).reply("off"); waitFor(() -> !engine.dogBusy());
+            check("off".equals(engine.dogMode()), "explicit recovery confirms only from TV reply");
+        } finally { shutdown(engine); }
+    }
+
+    private static void dogModeConfirmationAndGuards() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            check(TvProtocol.Remote.dogRequests.isEmpty(), "ordinary remote connection never queries Dog Mode");
+            engine.startDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogRequests.isEmpty(), "unknown Dog Mode cannot blindly start");
+            TvProtocol.Remote.holdDogReplies = true;
+            engine.refreshDogMode(); idle(engine);
+            check(engine.dogBusy() && "unknown".equals(engine.dogMode()), "read-only status waits for TV confirmation");
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state")), "status sends only fixed read action");
+            check(TvProtocol.Remote.dogRequests.get(0).timeout == 8000, "State keeps its short reply budget");
+            TvProtocol.Remote.dogRequests.get(0).reply("off");
+            waitFor(() -> !engine.dogBusy());
+            check("off".equals(engine.dogMode()), "authenticated off enables starting");
+            engine.startDogMode(); idle(engine);
+            engine.startDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start")), "double tap sends one start");
+            check(engine.dogBusy() && "off".equals(engine.dogMode()), "start write cannot invent active success");
+            check(TvProtocol.Remote.dogRequests.get(1).timeout == 35000, "Start alone has the longer startup budget");
+            TvProtocol.Remote.dogRequests.get(1).reply("starting");
+            waitFor(() -> "starting".equals(engine.dogMode()));
+            check(engine.dogBusy(), "starting is progress and cannot finish the Start wait");
+            TvProtocol.Remote.dogRequests.get(1).reply("active");
+            waitFor(() -> !engine.dogBusy());
+            check("active".equals(engine.dogMode()), "TV reply alone confirms active");
+            engine.stopDogMode(); idle(engine);
+            check(engine.dogBusy() && "active".equals(engine.dogMode()), "stop write cannot invent restored settings");
+            check(TvProtocol.Remote.dogRequests.get(2).timeout == 8000, "Stop keeps its short restoration budget");
+            TvProtocol.Remote.dogRequests.get(2).reply("restore_required");
+            waitFor(() -> !engine.dogBusy());
+            check("restore_required".equals(engine.dogMode()), "restore failure remains explicit and recoverable");
+            engine.stopDogMode(); idle(engine);
+            TvProtocol.Remote.dogRequests.get(3).reply("off");
+            waitFor(() -> !engine.dogBusy());
+            check("off".equals(engine.dogMode()), "explicit restore retry can confirm off");
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start", "stop", "stop")),
+                    "mutations are explicit fixed commands with no automatic replay");
+        } finally { shutdown(engine); }
+    }
+
+    private static void dogModeStartupFailuresRequireFreshStatusAndAllowRestore() throws Exception {
+        for (String state : new String[] {"nsnow_access", "nsnow_menu", "nsnow_channel", "nsnow_player", "nsnow_debug", "nsnow_target", "nsnow_input"}) {
+            RemoteEngine engine = engine();
+            try {
+                engine.resume(); idle(engine);
+                TvProtocol.Remote.holdDogReplies = true;
+                engine.refreshDogMode(); idle(engine);
+                TvProtocol.Remote.dogRequests.get(0).reply("off"); waitFor(() -> !engine.dogBusy());
+                engine.startDogMode(); idle(engine);
+                TvProtocol.Remote.dogRequests.get(1).reply("starting"); waitFor(() -> "starting".equals(engine.dogMode()));
+                TvProtocol.Remote.dogRequests.get(1).reply(state); waitFor(() -> !engine.dogBusy());
+                check(state.equals(engine.dogMode()), "final finite failure replaces startup progress: " + state);
+                check(engine.dogStatus().equals(DogStateWire.startupFailureMessage(state)), "only TV-confirmed failure reports restored settings: " + state);
+                engine.startDogMode(); idle(engine);
+                check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start")), "failed startup needs fresh off before Start: " + state);
+                engine.stopDogMode(); idle(engine);
+                check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start", "stop")), "failed startup permits explicit safe recovery: " + state);
+                TvProtocol.Remote.dogRequests.get(2).reply("off"); waitFor(() -> !engine.dogBusy());
+                engine.startDogMode(); idle(engine);
+                check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start", "stop", "start")), "new confirmed off enables a later explicit Start: " + state);
+                TvProtocol.Remote.dogRequests.get(3).reply("active"); waitFor(() -> !engine.dogBusy());
+            } finally { shutdown(engine); }
+        }
+    }
+
+    private static void dogModeCancellationAndTimeout() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            TvProtocol.Remote.holdDogReplies = true;
+            engine.refreshDogMode(); idle(engine);
+            DogStateClient cancelled = TvProtocol.Remote.dogRequests.get(0);
+            engine.pause(); idle(engine);
+            cancelled.reply("active"); Handler.drain();
+            check(cancelled.closed && !engine.dogBusy() && "unknown".equals(engine.dogMode()),
+                    "closing phone cancels confirmation without claiming TV stopped");
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state")), "pause never sends a Dog Mode stop");
+            engine.resume(); idle(engine);
+            engine.refreshDogMode(); idle(engine);
+            TvProtocol.Remote.dogRequests.get(1).reply("off"); waitFor(() -> !engine.dogBusy());
+            engine.startDogMode(); idle(engine);
+            DogStateClient uncertain = TvProtocol.Remote.dogRequests.get(2);
+            uncertain.reply("starting"); waitFor(() -> "starting".equals(engine.dogMode()));
+            check(engine.dogBusy(), "authenticated startup progress remains pending until final reply");
+            Handler.advance(45000); Handler.drain();
+            check(uncertain.closed && !engine.dogBusy() && "unknown".equals(engine.dogMode()),
+                    "uncertain start closes callback and requires a fresh status check");
+            uncertain.reply("active"); Handler.drain();
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "state", "start")),
+                    "uncertain start is never replayed");
+            engine.stopDogMode(); idle(engine);
+            check("stop".equals(TvProtocol.Remote.dogActions.get(3)), "timed-out startup offers explicit Stop recovery");
+            TvProtocol.Remote.dogRequests.get(3).reply("off"); waitFor(() -> !engine.dogBusy());
+            engine.refreshDogMode(); idle(engine);
+            DogStateClient old = TvProtocol.Remote.dogRequests.get(4);
+            engine.reconnect(); idle(engine);
+            old.reply("active"); Handler.drain();
+            check(old.closed && "unknown".equals(engine.dogMode()), "Sync rejects a late old-session Dog Mode reply");
+        } finally { shutdown(engine); }
+    }
+
+    private static void dogModeUnavailableKeepsRemote() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            TvProtocol.Remote.unsupportedDog = true;
+            engine.refreshDogMode(); idle(engine); waitFor(() -> !engine.dogBusy());
+            check("unknown".equals(engine.dogMode()), "unsupported transport cannot create confirmed state");
+            check(TvProtocol.Remote.dogRequests.isEmpty(), "unsupported bridge sends no mutation");
+            engine.sendKey(19); idle(engine); Handler.advance(750);
+            check(TvProtocol.Remote.keys.equals(java.util.Arrays.asList(19)), "Dog Mode support is independent of normal keys");
+            TvProtocol.Remote.unsupportedDog = false; TvProtocol.Remote.holdDogReplies = true;
+            engine.refreshDogMode(); idle(engine);
+            TvProtocol.Remote.dogRequests.get(0).reply("unavailable"); waitFor(() -> !engine.dogBusy());
+            check("unavailable".equals(engine.dogMode()), "TV capability reply is explicit");
+            engine.startDogMode(); idle(engine);
+            check(TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state")), "unavailable TV cannot start");
+            engine.forget(); Handler.drain();
+            check("unknown".equals(engine.dogMode()), "forget does not carry another TV's Dog Mode state");
+        } finally { shutdown(engine); }
     }
 
     private static void automaticAddressRecovery() throws Exception {
