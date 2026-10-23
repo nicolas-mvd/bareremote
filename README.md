@@ -370,3 +370,8 @@ emulator/loopback results; physical Android-to-NS NOW confirmation remains pendi
 Run this focused check with `python3 tests/android/run-passive-test.py --emulator
 emulator-SERIAL` after building the app and native test APK; use only a disposable
 selected emulator. It deliberately replaces that emulator's test pairing.
+
+
+After installing Android 0.7.1 on 2026-10-23, the owner reported that their tests
+worked. This confirms their reported reopen/use flow; it is not a new scripted
+check of every control or the three-hour prompt.

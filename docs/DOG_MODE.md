@@ -183,3 +183,13 @@ long-duration playback, TV reboot recovery and other TV/NS NOW versions were not
 physically tested. Prompt handling has source-backed selector fixtures and a
 final exact-prompt check before its one Back action. Android's Dog Mode client
 was checked with host/loopback tests; no physical phone was used for this check.
+
+
+BareHome **1.4.1** additionally saves Developer options and USB debugging, turns
+both off before launching NS NOW, and restores their exact previous values on
+exit. Reopen **Set up on TV** and Allow once for the expanded scope. Old
+three-setting journals remain recoverable without inventing prior debugging
+values. On the CSV4K, a start from both values On confirmed active with debugging
+closed; End and subsequent direct readbacks confirmed original values restored.
+The owner reported successful tests after installing Android 0.7.1. The actual
+three-hour prompt remains physically untested.
