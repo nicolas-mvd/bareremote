@@ -1,7 +1,7 @@
 {
-  "versionCode": 12,
-  "versionName": "0.3.1",
-  "zipUrl": "https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.1-prototype/BareRemote-macOS.zip",
-  "sha256": "a65eb29fb810f458e42918813740016030fdbb7d8794a527ac77d311202a728b",
-  "size": 1663287
+  "versionCode": 13,
+  "versionName": "0.3.2",
+  "zipUrl": "https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.2-prototype/BareRemote-macOS.zip",
+  "sha256": "1bfa68872a93822f9eb45513a035febbef379c45d61554c056b2d91051a31368",
+  "size": 1678379
 }
