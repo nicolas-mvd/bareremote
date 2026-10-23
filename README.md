@@ -366,7 +366,7 @@ All eight host suites pass **1,468 assertions**. An Android 15 emulator using it
 real Keystore identity also passes **40 native lifecycle assertions**: seven
 pinned sessions from repeated reopen/Settings/Sync sent zero app links to the
 independent loopback TV, and one explicit key was actually applied. These are
-emulator/loopback results; physical Android-to-NS NOW confirmation remains pending.
+emulator/loopback results; the owner’s subsequent confirmation is recorded below.
 Run this focused check with `python3 tests/android/run-passive-test.py --emulator
 emulator-SERIAL` after building the app and native test APK; use only a disposable
 selected emulator. It deliberately replaces that emulator's test pairing.
