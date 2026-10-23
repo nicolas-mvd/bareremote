@@ -10,8 +10,8 @@ confirmation, plus a menu bar remote, movable desktop remote and manual
 **Check for Updates**. Version 0.3.0 (build 11) requires macOS 13+.
 The desktop prototype has separate validation and versioning from
 the Android releases below.
-**[Download macOS 0.3.0](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.0-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.0-prototype). Apple Development-signed prototype; not notarized. It uses an Apple Development signature and is not
-notarized; see its [installation and signing notes](macos/README.md#build-and-open).
+
+**[Download macOS 0.3.0](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.0-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.0-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
 
 **Prototype, version 0.6.0 (code 11).** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; releases remain prereleases.
 

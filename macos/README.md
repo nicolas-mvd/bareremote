@@ -291,3 +291,10 @@ physical CSV4K TV. Updater tests exercise bounded metadata and downloads,
 archive validation, signed fixtures, staging, replacement and rollback; the
 [updater test notes](../docs/MACOS_UPDATES.md#tests) distinguish those fixtures
 from an update of the installed app.
+
+The real installed-app updater was then exercised with an isolated lower-version
+fixture of the production updater code: it checked the published GitHub feed,
+downloaded and verified the public 0.3.0 ZIP, installed and reopened build 11 in
+Applications, retained the original pairing byte for byte, and reported up to
+date on a new check. The installed executable matched the published build and
+strict signature verification passed. See the [live update validation](../docs/MACOS_UPDATES.md#tests).

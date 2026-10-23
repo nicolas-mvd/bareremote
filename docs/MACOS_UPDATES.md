@@ -94,3 +94,14 @@ It does not update the real `/Applications/BareRemote.app` or control a TV.
 Apple references: [static signature verification](https://developer.apple.com/documentation/security/secstaticcodecheckvalidity(_:_:_:)),
 [designated requirements](https://developer.apple.com/documentation/security/seccodecopydesignatedrequirement(_:_:_:)),
 and [Compression decoding](https://developer.apple.com/documentation/compression/compression_stream_process(_:_:)).
+
+The published 0.3.0 release was also installed through the actual native updater
+on 2026-10-22. An isolated lower-version fixture of the production app code
+(version 0.2.0 / build 10, signed with the existing identity) checked the live
+GitHub feed, downloaded and verified the public ZIP, and completed
+**Install & Reopen** in `/Applications/BareRemote.app`. The reopened app reported
+0.3.0 / build 11; its executable matched the released build, strict signature
+verification passed, and the original paired-TV file's exact bytes and permissions
+were retained. Successful helper staging was removed. A fresh manual check in
+the released app reported up to date. This exercised a real GitHub download and
+real app replacement; it did not send a physical-TV command.
