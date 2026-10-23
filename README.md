@@ -7,15 +7,15 @@ Build it with `./macos/build.sh` and open `build/macos/BareRemote.app`. It uses 
 own Keychain pairing identity and supports the same TV controls, local discovery,
 TV text entry, keyboard navigation, hold-to-repeat, and BareHome picture
 confirmation, plus a menu bar remote, movable desktop remote and manual
-**Check for Updates**. Version 0.3.0 (build 11) requires macOS 13+.
+**Check for Updates**. Version 0.3.1 (build 12) requires macOS 13+.
 The desktop prototype has separate validation and versioning from
 the Android releases below.
 
-**[Download macOS 0.3.0](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.0-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.0-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
+**[Download macOS 0.3.1](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.1-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.1-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
 
-**Prototype, version 0.6.1 (code 12).** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; releases remain prereleases.
+**Prototype, version 0.6.2 (code 13).** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; releases remain prereleases.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.6.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.6.1-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.6.2-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.6.2-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
