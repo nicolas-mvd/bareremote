@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="uy.nico.bareremote.keyboardtest">
+    <application android:label="BareRemote keyboard tests" android:allowBackup="false" />
+    <instrumentation android:name="uy.nico.bareremote.KeyboardInstrumentation" android:targetPackage="uy.nico.bareremote" />
+</manifest>

@@ -33,7 +33,7 @@ public final class TvProtocol {
     private static final int CONNECT_TIMEOUT_MS = 2000;
     private static final int HANDSHAKE_TIMEOUT_MS = 6000;
     private static final int REMOTE_IDLE_TIMEOUT_MS = 16000;
-    private static final int FEATURES = 1 | 2 | 32 | 64 | 512; // Ping, keys, power, volume, app links. No IME/voice.
+    private static final int FEATURES = 1 | 2 | 4 | 32 | 64 | 512; // Ping, keys, IME, power, volume, app links. No voice.
     // Conscrypt close() can send close_notify. Never run TLS shutdown on an Android UI caller.
     // Raw transports close immediately; this bounded native cleanup worker disappears when idle.
     private static final ThreadPoolExecutor TLS_CLEANUP = new ThreadPoolExecutor(0, 1, 1,
@@ -171,6 +171,38 @@ public final class TvProtocol {
         private long lastKeyWriteNanos;
         private volatile int features;
         private boolean configured;
+        private final KeyboardSession keyboard = new KeyboardSession();
+        private volatile KeyboardListener keyboardListener;
+        public interface KeyboardListener { void changed(KeyboardState state); }
+
+        public void setKeyboardListener(KeyboardListener value) {
+            keyboardListener = value;
+            if (value != null) value.changed(keyboard.snapshot());
+        }
+        public KeyboardState keyboardState() { return keyboard.snapshot(); }
+
+        /** Commits one native-IME chunk to the exact currently focused field. Never retried. */
+        public void sendText(String text, KeyboardState expected) throws IOException {
+            synchronized (keyLock) {
+                send(keyboard.commit(text, expected));
+                commandWritten();
+            }
+        }
+        /** Keyboard editing keys share field scope, bounds, output serialization and delivery rules. */
+        public void sendKeyboardKey(int key, KeyboardState expected) throws IOException {
+            if (key != 67 && key != 112 && key != 66 && key != 21 && key != 22 && key != 61)
+                throw new IllegalArgumentException("Unknown keyboard control");
+            synchronized (keyLock) {
+                keyboard.checkField(expected);
+                sendKeyDirection(key, 3);
+            }
+        }
+        private void commandWritten() {
+            synchronized (deliveryLock) {
+                lastKeyWriteNanos = System.nanoTime();
+                deliveryLock.notifyAll();
+            }
+        }
 
         private Remote(Connection connection) throws IOException {
             this.connection = connection;
@@ -339,9 +371,10 @@ public final class TvProtocol {
             if (message.has(1)) {
                 long supported = message.message(1).integer(1, 0);
                 features = (int) supported & FEATURES;
+                keyboard.supported((features & 4) != 0);
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.4.1");
+                        .text(5, "uy.nico.bareremote").text(6, "0.6.0");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;
@@ -354,6 +387,10 @@ public final class TvProtocol {
             if (message.has(8)) {
                 long ping = message.message(8).integer(1, 0);
                 send(new Proto.Writer().message(9, new Proto.Writer().number(1, ping)));
+            }
+            if (configured && (features & 4) != 0 && keyboard.receive(message)) {
+                KeyboardListener target = keyboardListener;
+                if (target != null) target.changed(keyboard.snapshot());
             }
             if (message.has(40)) {
                 if (!configured) throw new IOException("TV remote configuration missing");
@@ -377,7 +414,11 @@ public final class TvProtocol {
         }
 
         @Override public void close() {
+            if (closed) return;
             closed = true;
+            keyboard.clear();
+            KeyboardListener target = keyboardListener;
+            if (target != null) target.changed(keyboard.snapshot());
             connection.close();
             synchronized (deliveryLock) { deliveryLock.notifyAll(); }
         }

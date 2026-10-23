@@ -39,6 +39,8 @@ public final class ProtocolTest {
         testPairing(context, identity, pin);
         testPairingCancellation(context, identity);
         testRemote(context, identity, pin);
+        testKeyboardState();
+        testKeyboardTransport(context, identity, pin);
         testPictureLinks(context, identity, pin);
         testInputRegistrationDelay(context, identity, pin);
         testDeferredDispatch(context, identity, pin);
@@ -169,9 +171,9 @@ public final class ProtocolTest {
         Server server = new Server(context, new Session() {
             @Override public void run(SSLSocket socket) throws Exception {
                 write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 1023)));
-                check(read(socket).message(1).integer(1, 0) == 611, "keys and app links negotiated without IME or voice");
+                check(read(socket).message(1).integer(1, 0) == 615, "keys, IME and app links negotiated without voice");
                 write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 1023)));
-                check(read(socket).message(2).integer(1, 0) == 611, "set active response");
+                check(read(socket).message(2).integer(1, 0) == 615, "set active response");
                 write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 0)));
                 check(read(socket).message(10).integer(2, 0) == 3, "short key sent after standby readiness");
                 write(socket, new Proto.Writer().message(8, new Proto.Writer().number(1, -1)));
@@ -212,6 +214,104 @@ public final class ProtocolTest {
         check(!remote.isOpen(), "remote notices disconnect");
         fails(new Action() { public void run() throws Exception { remote.sendKey(3); } }, "closed remote rejects command");
         remote.close();
+    }
+
+    private static Proto.Message keyboardMessage(int envelope, Proto.Writer body) throws Exception {
+        // Use actual serialized frames, not mock callbacks.
+        ByteArrayOutputStream framed = new ByteArrayOutputStream();
+        Proto.writeFrame(framed, new Proto.Writer().message(envelope, body).build());
+        return Proto.parse(Proto.readFrame(new ByteArrayInputStream(framed.toByteArray())));
+    }
+    private static void testKeyboardState() throws Exception {
+        KeyboardSession keyboard = new KeyboardSession();
+        keyboard.supported(true);
+        keyboard.receive(keyboardMessage(20, new Proto.Writer().message(1,
+                new Proto.Writer().number(1, 1).text(12, "test.app"))));
+        check(!keyboard.snapshot().active, "current app is not keyboard focus");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 1).number(2, 1)));
+        keyboard.receive(keyboardMessage(20, new Proto.Writer().message(2, new Proto.Writer().number(1, 1))));
+        check(keyboard.snapshot().canType() && !keyboard.snapshot().showRequested,
+                "trusted field context enables explicit manual typing without automatic SHOW");
+        check(Proto.parse(keyboard.commit("manual", keyboard.snapshot()).build()).has(21),
+                "manual keyboard sends through valid context without SHOW");
+        keyboard.clear(); keyboard.supported(true);
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
+                new Proto.Writer().number(1, 8).text(2, "secret never mirrored"))));
+        check(keyboard.snapshot().active && !keyboard.snapshot().canType(), "SHOW switches before counters but cannot send");
+        fails(() -> keyboard.commit("a", keyboard.snapshot()), "unknown counters cannot type");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 4).number(2, 8)));
+        KeyboardState field = keyboard.snapshot();
+        check(field.canType(), "matching counter notification enables keyboard");
+        long focus = field.focusID;
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 8))));
+        check(keyboard.snapshot().focusID == focus, "duplicate show preserves manual remote override token");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 3).number(2, 9)));
+        check(keyboard.snapshot().imeCounter == 4 && keyboard.snapshot().fieldCounter == 8, "stale counter ignored");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 5).number(2, 8)));
+        Proto.Message batch = Proto.parse(keyboard.commit("é😀漢", field).build()).message(21);
+        check(batch.integer(1, 0) == 5 && batch.integer(2, 0) == 8, "queued text uses latest ACK revision on same field");
+        Proto.Message object = batch.message(3).message(2);
+        check(batch.message(3).integer(1, 0) == 1, "known commit operation encoded");
+        check(object.integer(1, 0) == 3 && object.integer(2, 0) == 3, "emoji cursor offsets use UTF-16");
+        check(Arrays.equals(object.bytes(3), "é😀漢".getBytes("UTF-8")), "Unicode UTF-8 bytes preserved");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 5).number(2, 9)));
+        check(!keyboard.snapshot().canType(), "new counter field cannot retarget old show");
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 9))));
+        check(keyboard.snapshot().focusID != focus && keyboard.snapshot().canType(), "new focus has distinct override token");
+        fails(() -> keyboard.commit("old", field), "old field text never retargeted");
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 8))));
+        check(keyboard.snapshot().fieldCounter == 9 && keyboard.snapshot().canType(), "stale show ignored");
+        keyboard.receive(keyboardMessage(20, new Proto.Writer()));
+        check(!keyboard.snapshot().active, "focus loss clears active keyboard");
+        fails(() -> keyboard.commit("hidden", field), "focus loss rejects text");
+        for (long bad : new long[] {-1, 2147483648L, Long.MAX_VALUE}) {
+            fails(() -> keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, bad))), "invalid IME counter bounded");
+            fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
+                    new Proto.Writer().number(1, bad)))), "invalid field counter bounded");
+        }
+        fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
+                new Proto.Writer().bytes(2, new byte[] {(byte)0xff})))), "invalid UTF-8 rejected even without mirror");
+        fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
+                new Proto.Writer().bytes(2, new byte[16385])))), "TV text size bounded");
+        for (String text : new String[] {"", "\ud800", "\udc00", new String(new char[4097]).replace('\0', 'a')})
+            fails(() -> KeyboardSession.validateCommit(text), "invalid/oversized outgoing text bounded");
+        keyboard.clear(); keyboard.supported(true);
+        keyboard.receive(keyboardMessage(21, new Proto.Writer()));
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer())));
+        batch = Proto.parse(keyboard.commit("a", keyboard.snapshot()).build()).message(21);
+        check(!batch.has(1) && !batch.has(2), "zero counters use canonical proto3 omission");
+        check(!batch.message(3).message(2).has(1) && !batch.message(3).message(2).has(2), "zero text offsets omitted");
+        keyboard.clear();
+        check(!keyboard.snapshot().active && !keyboard.snapshot().supported, "disconnect removes all keyboard metadata");
+    }
+    private static void testKeyboardTransport(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {
+        CountDownLatch gotCommit = new CountDownLatch(1), finish = new CountDownLatch(1);
+        Server server = new Server(context, socket -> {
+            write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 7)));
+            check(read(socket).message(1).integer(1, 0) == 7, "IME capability intersected over TLS");
+            write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 7))); read(socket);
+            write(socket, new Proto.Writer().message(21, new Proto.Writer().number(1, 9).number(2, 2)));
+            write(socket, new Proto.Writer().message(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 2))));
+            write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
+            Proto.Message batch = read(socket).message(21);
+            check(batch.integer(1, 0) == 9 && batch.integer(2, 0) == 2, "authenticated text carries TV counters");
+            check(Arrays.equals(batch.message(3).message(2).bytes(3), "paste 😀".getBytes("UTF-8")), "TLS Unicode commit preserved exactly once");
+            check(read(socket).message(10).integer(1, 0) == 67, "backspace uses ordinary keyboard key");
+            check(read(socket).message(10).integer(1, 0) == 66, "Enter uses ordinary keyboard key");
+            gotCommit.countDown();
+            write(socket, new Proto.Writer().message(20, new Proto.Writer()));
+            finish.await(2, TimeUnit.SECONDS);
+        });
+        TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", server.port(), pin, identity);
+        CountDownLatch blur = new CountDownLatch(1);
+        remote.setKeyboardListener(value -> { if (!value.active) blur.countDown(); });
+        KeyboardState target = remote.keyboardState();
+        check(target.canType(), "real reader consumes IME frames during startup");
+        remote.sendText("paste 😀", target); remote.sendKeyboardKey(67, target); remote.sendKeyboardKey(66, target);
+        check(gotCommit.await(2, TimeUnit.SECONDS), "server receives commits and editing keys");
+        check(blur.await(2, TimeUnit.SECONDS), "real reader emits focus loss without polling");
+        fails(() -> remote.sendText("stale", target), "TLS session refuses obsolete focused field");
+        finish.countDown(); remote.close(); server.finish();
     }
 
     private static void testPictureLinks(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {

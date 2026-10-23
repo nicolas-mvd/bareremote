@@ -26,6 +26,7 @@ import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.view.inputmethod.InputMethodManager;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -47,6 +48,13 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private TextView errorText;
     private ImageButton syncButton;
     private ImageButton pictureButton;
+    private ImageButton keyboardButton;
+    private ScrollView remoteScroll, keyboardScroll;
+    private KeyboardInputView keyboardInput;
+    private TextView keyboardStatus;
+    private boolean keyboardVisible;
+    private long manuallyClosedFocus = -1;
+    private long displayedFocus = -1;
     private AlertDialog setupDialog;
     private AlertDialog discoveryDialog;
     private AlertDialog codeDialog;
@@ -100,7 +108,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             int left, top, right, bottom;
             if (Build.VERSION.SDK_INT >= 30) {
                 android.graphics.Insets bars = insets.getInsets(
-                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout() | WindowInsets.Type.ime());
                 left = bars.left; top = bars.top; right = bars.right; bottom = bars.bottom;
             } else {
                 left = insets.getSystemWindowInsetLeft();
@@ -112,6 +120,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             return insets;
         });
         ScrollView scroll = new RemoteScrollView(this);
+        remoteScroll = scroll;
         scroll.setFillViewport(true);
         scroll.setVerticalScrollBarEnabled(false);
         screen.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
@@ -138,6 +147,10 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         shortParams.leftMargin = dp(8);
         shortParams.rightMargin = dp(8);
         header.addView(shortcutSpace, shortParams);
+        keyboardButton = icon(R.drawable.remote_icon_keyboard, "Keyboard mode");
+        keyboardButton.setOnClickListener(v -> showKeyboard(true));
+        remoteButtons.add(keyboardButton);
+        header.addView(keyboardButton, new LinearLayout.LayoutParams(dp(48), dp(48)));
         ImageButton power = keyIcon(R.drawable.remote_icon_power, "TV power", KeyEvent.KEYCODE_POWER);
         header.addView(power, new LinearLayout.LayoutParams(dp(48), dp(48)));
         content.setHeader(header);
@@ -187,11 +200,117 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         addWeightedIcon(volume, keyIcon(R.drawable.remote_icon_volume_down, "Volume down", KeyEvent.KEYCODE_VOLUME_DOWN), 1.2f);
         addWeightedIcon(volume, keyIcon(R.drawable.remote_icon_volume_up, "Volume up", KeyEvent.KEYCODE_VOLUME_UP), 1.2f);
         content.setVolume(volume);
+        createKeyboard(screen);
         setContentView(screen);
         screen.requestApplyInsets();
         refreshTarget();
         refreshPictureMode();
         enableControls(engine.isPaired());
+    }
+
+    private void createKeyboard(LinearLayout screen) {
+        keyboardScroll = new ScrollView(this);
+        keyboardScroll.setFillViewport(true);
+        keyboardScroll.setVisibility(View.GONE);
+        LinearLayout body = column();
+        body.setPadding(dp(12), 0, dp(12), dp(20));
+        keyboardScroll.addView(body, new ScrollView.LayoutParams(-1, -2));
+        LinearLayout header = row();
+        Button remote = button("‹  Remote", "Return to normal remote mode");
+        remote.setBackground(roundStates(0xff1c1e1d, 0xff454b47, 100));
+        remote.setOnClickListener(v -> hideKeyboard(true));
+        header.addView(remote, new LinearLayout.LayoutParams(-2, dp(48)));
+        TextView title = text("Keyboard", 20, WHITE);
+        title.setTypeface(null, Typeface.BOLD);
+        title.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        header.addView(title, new LinearLayout.LayoutParams(0, dp(48), 1));
+        body.addView(header);
+        keyboardStatus = text("Select a text field on your TV to start typing.", 15, MUTED);
+        keyboardStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        keyboardStatus.setPadding(0, dp(12), 0, dp(12));
+        body.addView(keyboardStatus);
+        keyboardInput = new KeyboardInputView(this, new KeyboardInputView.Sink() {
+            @Override public void commit(String text) { clearError(); engine.sendText(text); }
+            @Override public void key(int key) { clearError(); engine.sendKeyboardKey(key); }
+        });
+        keyboardInput.setTextColor(WHITE);
+        keyboardInput.setHintTextColor(MUTED);
+        keyboardInput.setTextSize(21);
+        keyboardInput.setPadding(dp(16), dp(12), dp(16), dp(12));
+        keyboardInput.setBackground(roundFill(0xff1c1e1d, 20));
+        body.addView(keyboardInput, new LinearLayout.LayoutParams(-1, dp(80)));
+        LinearLayout editing = row();
+        editing.setPadding(0, dp(16), 0, dp(12));
+        addKeyboardAction(editing, "←", "Move TV text cursor left", KeyEvent.KEYCODE_DPAD_LEFT);
+        addKeyboardAction(editing, "→", "Move TV text cursor right", KeyEvent.KEYCODE_DPAD_RIGHT);
+        addKeyboardAction(editing, "⌫", "Delete before the TV text cursor", KeyEvent.KEYCODE_DEL);
+        addKeyboardAction(editing, "Enter", "Enter on TV", KeyEvent.KEYCODE_ENTER);
+        body.addView(editing, new LinearLayout.LayoutParams(-1, dp(76)));
+        TextView detail = text("Type or paste to your TV. TV text stays on your TV.", 13, MUTED);
+        body.addView(detail);
+        screen.addView(keyboardScroll, new LinearLayout.LayoutParams(-1, -1));
+    }
+    private void addKeyboardAction(LinearLayout row, String label, String description, int key) {
+        Button action = button(label, description);
+        action.setBackground(roundStates(0xff1c1e1d, 0xff454b47, 100));
+        action.setOnClickListener(v -> { keyboardInput.commitComposition(); engine.sendKeyboardKey(key); });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(0, dp(48), 1);
+        params.setMargins(dp(3), 0, dp(3), 0);
+        row.addView(action, params);
+    }
+    private void showKeyboard(boolean manual) {
+        if (!resumed || !engine.isPaired() || pairingInProgress || setupDialog != null) return;
+        cancelRepeatingButtons();
+        keyboardVisible = true;
+        remoteScroll.setVisibility(View.GONE);
+        keyboardScroll.setVisibility(View.VISIBLE);
+        KeyboardState state = engine.keyboardState();
+        displayedFocus = state.focusID;
+        updateKeyboardStatus(state);
+        keyboardInput.requestFocus();
+        keyboardInput.post(() -> {
+            if (!resumed || !keyboardVisible) return;
+            InputMethodManager input = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+            if (input != null) input.showSoftInput(keyboardInput, InputMethodManager.SHOW_IMPLICIT);
+        });
+    }
+    private void hideKeyboard(boolean manual) {
+        if (manual) manuallyClosedFocus = engine.keyboardState().focusID;
+        keyboardVisible = false;
+        engine.cancelKeyboardInput();
+        if (keyboardInput == null) return;
+        keyboardInput.accepting(false);
+        keyboardInput.clearPrivateText();
+        keyboardInput.clearFocus();
+        InputMethodManager input = (InputMethodManager) getSystemService(INPUT_METHOD_SERVICE);
+        if (input != null) input.hideSoftInputFromWindow(keyboardInput.getWindowToken(), 0);
+        keyboardScroll.setVisibility(View.GONE);
+        remoteScroll.setVisibility(View.VISIBLE);
+    }
+    private void updateKeyboardStatus(KeyboardState state) {
+        keyboardInput.accepting(keyboardVisible && state.canType());
+        keyboardStatus.setText(state.canType() ? "Connected. Type on your TV."
+                : state.active ? "Waiting for the TV’s text field…"
+                : state.supported ? "Select a text field on your TV to start typing."
+                : "Select a TV text field, then tap Sync if needed. Some TV apps do not offer remote text input.");
+    }
+    @Override public void onKeyboardState(KeyboardState state) {
+        if (keyboardInput == null) return;
+        if (displayedFocus != state.focusID) {
+            keyboardInput.accepting(false);
+            engine.cancelKeyboardInput();
+            displayedFocus = state.focusID;
+        }
+        if (!state.active) {
+            manuallyClosedFocus = -1;
+            keyboardInput.accepting(false);
+            if (keyboardVisible) hideKeyboard(false);
+        } else if (state.showRequested && !keyboardVisible && state.focusID != manuallyClosedFocus) showKeyboard(false);
+        updateKeyboardStatus(state);
+    }
+    @Override public void onBackPressed() {
+        if (keyboardVisible) { hideKeyboard(true); return; }
+        super.onBackPressed();
     }
 
     private ImageButton icon(int resource, String description) {
@@ -286,6 +405,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
 
     private void showSetup() {
+        hideKeyboard(true);
         pendingSetup = true;
         if (!resumed || setupDialog != null) return;
         pendingCode = false;
@@ -676,6 +796,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     @Override protected void onPause() {
         resumed = false;
         cancelRepeatingButtons();
+        hideKeyboard(false);
+        manuallyClosedFocus = -1;
         cancelAddressReconnect();
         if (pairingInProgress || pendingCode) {
             pairingInterrupted = true;
@@ -739,6 +861,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
 
     @Override public void onError(String message) {
         cancelRepeatingButtons();
+        if (keyboardVisible) keyboardStatus.setText(message);
         pairingInProgress = false;
         refreshSync();
         stateText.setText(engine.needsPairingUpgrade() ? RemoteEngine.PAIRING_UPGRADE_MESSAGE

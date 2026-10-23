@@ -156,6 +156,19 @@ final class TvProtocol {
         static volatile String failHost, pinRejectHost;
         static final java.util.List<PictureStateClient> pictureRequests = new CopyOnWriteArrayList<>();
         static final java.util.List<Boolean> pictureToggles = new CopyOnWriteArrayList<>();
+        interface KeyboardListener { void changed(KeyboardState state); }
+        volatile KeyboardListener keyboardListener;
+        volatile KeyboardState keyboard = KeyboardState.unavailable();
+        void setKeyboardListener(KeyboardListener value) { keyboardListener=value; if(value!=null)value.changed(keyboard); }
+        KeyboardState keyboardState() { return keyboard; }
+        void keyboard(KeyboardState next) { keyboard=next; if(keyboardListener!=null)keyboardListener.changed(next); }
+        static final java.util.List<String> texts = new CopyOnWriteArrayList<>();
+        void sendText(String text, KeyboardState expected) throws Exception {
+            if(!open || !keyboard.sameField(expected))throw new java.io.IOException("Field changed"); texts.add(text);
+        }
+        void sendKeyboardKey(int key, KeyboardState expected) throws Exception {
+            if(!open || !keyboard.sameField(expected))throw new java.io.IOException("Field changed"); sendKey(key);
+        }
         volatile boolean open=true;
         final String host;
         final int port;
@@ -196,7 +209,7 @@ final class TvProtocol {
         }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { connections.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
+        static void reset() { connections.clear(); texts.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
     }
 }
 """,
@@ -215,6 +228,9 @@ class EngineTest(unittest.TestCase):
                 sources.append(str(path))
             sources += [str(ROOT / "app/src/main/java/uy/nico/bareremote/RemoteEngine.java"),
                         str(ROOT / "app/src/main/java/uy/nico/bareremote/PictureStateWire.java"),
+                        str(ROOT / "app/src/main/java/uy/nico/bareremote/KeyboardState.java"),
+                        str(ROOT / "app/src/main/java/uy/nico/bareremote/KeyboardSession.java"),
+                        str(ROOT / "app/src/main/java/uy/nico/bareremote/Proto.java"),
                         str(ROOT / "tests/EngineTest.java")]
             subprocess.run(["javac", "--release", "8", "-d", str(base), *sources], check=True)
             subprocess.run(["java", "-cp", str(base), "uy.nico.bareremote.EngineTest"], check=True, timeout=20)

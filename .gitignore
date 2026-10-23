@@ -10,3 +10,5 @@ diagnostics/
 __pycache__/
 *.pyc
 .DS_Store
+macos/.build/
+macos/.swiftpm/

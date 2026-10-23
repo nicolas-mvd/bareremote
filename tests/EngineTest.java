@@ -18,6 +18,8 @@ public final class EngineTest {
     private static int assertions;
 
     public static void main(String[] args) throws Exception {
+        keyboardForegroundAndACKs();
+        keyboardCancellationAndStaleCallbacks();
         burstAndOwnership();
         repeatingKeysUseForegroundSession();
         queuedReleaseCancelsRepeat();
@@ -53,6 +55,70 @@ public final class EngineTest {
         changedAddressRejectsConcurrentControls();
         changedAddressCancelsOldCommands();
         System.out.println("Engine tests: " + assertions + " assertions passed");
+    }
+
+    private static void keyboardForegroundAndACKs() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            TvProtocol.Remote remote = TvProtocol.Remote.connections.get(0);
+            remote.keyboard(new KeyboardState(true, true, true, 4, 1, 10)); Handler.drain();
+            check(engine.keyboardState().canType(), "foreground exposes ephemeral keyboard focus");
+            CountDownLatch release = blockWorker(engine);
+            engine.sendText("é😀漢"); engine.sendText("paste"); engine.sendKeyboardKey(67); engine.sendKeyboardKey(66);
+            remote.keyboard(new KeyboardState(true, true, true, 5, 1, 10)); Handler.drain();
+            release.countDown(); idle(engine);
+            check(TvProtocol.Remote.texts.size() == 2 && "é😀漢".equals(TvProtocol.Remote.texts.get(0))
+                    && "paste".equals(TvProtocol.Remote.texts.get(1)), "ACK revision cannot lose or duplicate queued Unicode commits");
+            check(TvProtocol.Remote.keys.size() == 2 && TvProtocol.Remote.keys.get(0) == 67
+                    && TvProtocol.Remote.keys.get(1) == 66, "keyboard delete and Enter delivered in queue order");
+            check(TvProtocol.Remote.connections.size() == 1, "typing reuses foreground connection");
+            engine.sendText(""); engine.sendText("\ud800"); engine.sendKeyboardKey(26); idle(engine);
+            check(TvProtocol.Remote.texts.size() == 2 && TvProtocol.Remote.keys.size() == 2,
+                    "invalid text and non-keyboard controls cannot enter keyboard queue");
+            engine.setWidgetSessionActive(true); engine.pause(); idle(engine);
+            check(!engine.keyboardState().active && remote.isOpen(), "widget ownership never exposes background field contents/focus");
+            engine.sendText("background"); engine.sendKeyboardKey(67); idle(engine);
+            check(TvProtocol.Remote.texts.size() == 2 && TvProtocol.Remote.keys.size() == 2,
+                    "background widget session cannot send text");
+        } finally { shutdown(engine); }
+    }
+    private static void keyboardCancellationAndStaleCallbacks() throws Exception {
+        for (int scenario = 0; scenario < 5; scenario++) {
+            RemoteEngine engine = engine();
+            try {
+                List<KeyboardState> callbacks = new ArrayList<>();
+                engine.setListener(new RemoteEngine.Listener() {
+                    public void onState(String value, boolean paired) {}
+                    public void onPairingCodeNeeded() {}
+                    public void onPaired() {}
+                    public void onError(String value) {}
+                    public void onKeyboardState(KeyboardState state) { callbacks.add(state); }
+                });
+                engine.resume(); idle(engine);
+                TvProtocol.Remote old = TvProtocol.Remote.connections.get(0);
+                old.keyboard(new KeyboardState(true, true, true, 1, 2, 20)); Handler.drain();
+                CountDownLatch release = blockWorker(engine);
+                engine.sendText("must-cancel"); engine.sendKeyboardKey(67);
+                if (scenario == 0) old.keyboard(new KeyboardState(true, true, true, 1, 3, 21));
+                else if (scenario == 1) { engine.cancelKeyboardInput(); }
+                else if (scenario == 2) { engine.pause(); engine.resume(); }
+                else if (scenario == 3) engine.reconnect();
+                else { old.keyboard(new KeyboardState(true, false, true, 1, 2, 21)); }
+                release.countDown(); idle(engine);
+                check(TvProtocol.Remote.texts.isEmpty() && TvProtocol.Remote.keys.isEmpty(),
+                        "queued text and editing keys cancel across field/mode/lifecycle changes " + scenario);
+                if (scenario == 3) {
+                    TvProtocol.Remote fresh = TvProtocol.Remote.connections.get(1);
+                    int count = callbacks.size();
+                    old.keyboard(new KeyboardState(true, true, true, 99, 99, 99)); Handler.drain();
+                    check(callbacks.size() == count && !engine.keyboardState().active,
+                            "stale old-session focus cannot reopen keyboard after Sync");
+                    fresh.keyboard(new KeyboardState(true, true, true, 2, 1, 1)); Handler.drain();
+                    check(engine.keyboardState().canType(), "fresh session can expose its own keyboard focus");
+                }
+            } finally { shutdown(engine); }
+        }
     }
 
     private static RemoteEngine engine() throws Exception {

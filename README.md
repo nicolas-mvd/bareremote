@@ -2,9 +2,19 @@
 
 A small Android TV remote for your phone. Open it, press a button. Or give its widget an entire home-screen page.
 
-**Prototype, version 0.5.1.** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; the release remains a prerelease.
+**macOS:** A native desktop companion is now available in [`macos/`](macos/README.md).
+Build it with `./macos/build.sh` and open `build/macos/BareRemote.app`. It uses its
+own Keychain pairing identity and supports the same TV controls, local discovery,
+TV text entry, keyboard navigation, hold-to-repeat, and BareHome picture
+confirmation, plus a menu bar remote, movable desktop remote and manual
+**Check for Updates**. Version 0.3.0 (build 11) requires macOS 13+.
+The desktop prototype has separate validation and versioning from
+the Android releases below. It uses an Apple Development signature and is not
+notarized; see its [installation and signing notes](macos/README.md#build-and-open).
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.5.1-prototype)
+**Prototype source build, version 0.6.0 (code 11).** Android 8+; targets Android 15. This is separate from the [BareHome TV launcher](https://github.com/nicolas-mvd/barehome) and does not require BareHome. Compatibility checks are listed below; releases remain prereleases.
+
+**Latest published APK (0.5.1): [Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.5.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.5.1-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
@@ -47,6 +57,36 @@ Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and
 
 If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
 
+## Type on your TV
+
+Version 0.6.0 adds a native keyboard mode. Select a search box or another text
+field on the TV. When Android TV Remote Service asks to show its keyboard,
+the open BareRemote app switches automatically and opens your phone's keyboard.
+You can also tap the **keyboard icon** at the top of the remote to open the mode
+manually. The TV must still provide a focused text field; opening this mode
+does not select a field or force an unsupported TV app to accept text.
+
+Type or paste to send committed text to the TV. Unicode and native input-method
+composition are supported, with cursor left/right, Delete and Enter controls.
+Tap **Remote**, or use the phone's Back button, to return to the D-pad. Repeated
+show messages for the same TV field respect that choice; selecting a new field
+can open keyboard mode again. If the TV stops reporting an active field, the
+app returns to the remote.
+
+The local input is a temporary commit pad: composing text remains local until
+committed, then it clears. Existing TV text is never mirrored, saved or logged,
+and there is no local edit or undo history for text already sent. Input is bound
+to the current paired connection and field; a focus change or disconnect drops
+stale input instead of sending it later. A failed or uncertain commit is never
+retried. The TV service does not confirm that its app applied a commit.
+
+Support depends on the TV's remote service and the current TV app. Use the
+normal remote when a field does not expose remote text input. Text entry is
+available in the full Android app; the home-screen widget opens that app.
+The Mac companion provides the same mode in its window and menu bar, with a
+desktop shortcut to open the typing window. See [macOS keyboard controls](macos/README.md#type-on-your-tv)
+and the [protocol and privacy details](docs/PROTOCOL.md#native-keyboard-input).
+
 ## Multiple phones
 
 Each phone has its own permanent pairing identity, so both can stay paired and
@@ -71,6 +111,11 @@ There are no automatic phone checks or background downloads. If you already have
 0.4.0, use its updater to install this version. Older versions need one manual APK
 installation to gain the updater.
 See [update checks, verification and release instructions](docs/UPDATES.md).
+
+On macOS, choose **BareRemote → Check for Updates…** or the same option in
+**TV Setup**, then **Download → Install & Reopen**. The Mac updater verifies the
+archive, version and signing identity before replacing the app. See
+[macOS update checks and installation](docs/MACOS_UPDATES.md).
 
 ## Day/Night from the phone
 
@@ -117,7 +162,13 @@ See [protocol notes and primary implementation references](docs/PROTOCOL.md) for
 
 ## Prototype limits and validation
 
-One saved TV per phone, IPv4 discovery or manual entry, no text keyboard or voice input. There are no accounts, scheduled background polling, or automatic startup. Manual update checks and downloads contact GitHub; remote commands and discovery remain local. The widget session lasts only until its idle timer expires or you stop it; it does not run indefinitely. Behavior on other manufacturers remains unverified.
+One saved TV per installation, IPv4 discovery or manual entry, and no voice
+input. Text entry requires a compatible TV service and focused editor; it does
+not read back or replace a whole TV field. There are no accounts, scheduled
+background polling, or automatic startup. Manual update checks and downloads
+contact GitHub; remote commands and discovery remain local. The widget session
+lasts only until its idle timer expires or you stop it; it does not run
+indefinitely. Behavior on other manufacturers remains unverified.
 
 The 0.2.0 suites passed **156 protocol assertions** (including loopback mutual TLS) and **55 engine assertions** covering shared sessions, rapid command queues, Sync, deadlines, and cancellation across app/widget lifecycle changes.
 
@@ -224,3 +275,14 @@ test used two addresses for the same simulated TV, rather than a physical DHCP
 lease change. The 320 × 640 dp Setup layout keeps Cancel and Reconnect visible.
 No physical-TV pairing or controls were sent. Physical-phone reconnection remains
 unverified. The published APK matches the installed, tested APK byte-for-byte.
+
+Version **0.6.0** passes **1,042 host assertions and 50 native Android/app
+assertions**. It adds keyboard mode, automatic switching on an authenticated TV
+keyboard-show request, and explicit Keyboard/Remote controls. Host tests cover
+IME negotiation, field and counter changes, Unicode framing, bounds and stale
+input rejection. Native Android instrumentation against a local simulated TV
+checks automatic and manual mode changes, repeated-show suppression, new-field
+switching, Japanese composition, Unicode commits, clipboard paste, Delete,
+Enter, focus loss, and continued normal remote controls. These are
+emulator/mock results; keyboard input in 0.6.0 has not been checked on a physical
+phone or the CSV4K TV.

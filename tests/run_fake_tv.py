@@ -15,6 +15,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pairing-port", type=int, default=6467)
     parser.add_argument("--remote-port", type=int, default=6466)
+    parser.add_argument("--ime", action="store_true", help="Opt-in keyboard scenario: OK focuses/repeats/changes field; Back clears focus")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     java = root / "app/src/main/java/uy/nico/bareremote"
@@ -28,12 +29,12 @@ def main():
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.run([
             "javac", "--release", "8", "-d", str(temporary), str(java / "Proto.java"),
-            str(java / "TvProtocol.java"), str(java / "PictureStateWire.java"),
+            str(java / "TvProtocol.java"), str(java / "KeyboardState.java"), str(java / "KeyboardSession.java"), str(java / "PictureStateWire.java"),
                 str(java / "PictureStateClient.java"), str(root / "tests/FakeTv.java"),
         ], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         process = subprocess.Popen([
             "java", "-cp", str(temporary), "uy.nico.bareremote.FakeTv", str(store),
-            str(args.pairing_port), str(args.remote_port),
+            str(args.pairing_port), str(args.remote_port), *( ["ime"] if args.ime else [] ),
         ])
         def terminate(signum, frame):
             process.terminate()

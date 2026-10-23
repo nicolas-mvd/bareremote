@@ -47,11 +47,13 @@ public final class FakeTv {
     private static final ExecutorService pictureCallbacks = Executors.newFixedThreadPool(2);
     private static final Set<Integer> emulatorRedirects = Collections.synchronizedSet(new HashSet<Integer>());
     private static volatile boolean pictureNight;
+    private static boolean imeScenario;
     private static final java.util.regex.Pattern PICTURE_REQUEST = java.util.regex.Pattern.compile(
             "^barehome://picture/(state|toggle)\\?reply=([0-9.]+)&port=([0-9]+)&token=([a-f0-9]{64})$");
 
     public static void main(String[] args) throws Exception {
-        if (args.length != 3) throw new IllegalArgumentException("FakeTv test.p12 PAIRING_PORT REMOTE_PORT");
+        if (args.length < 3 || args.length > 4) throw new IllegalArgumentException("FakeTv test.p12 PAIRING_PORT REMOTE_PORT [ime]");
+        imeScenario = args.length == 4 && "ime".equals(args[3]);
         serve(context(args[0], true), Integer.parseInt(args[1]), true);
         serve(context(args[0], false), Integer.parseInt(args[2]), false);
         System.out.println("FAKE_TV_READY loopback=127.0.0.1 emulator=10.0.2.2");
@@ -174,6 +176,8 @@ public final class FakeTv {
                 }
             }
         }, 3, 3, TimeUnit.SECONDS);
+        int focusTap = 0, imeCounter = 7, fieldCounter = 0, commits = 0;
+        String typed = "";
         try {
             while (!socket.isClosed()) {
                 Proto.Message message = read(socket);
@@ -181,6 +185,26 @@ public final class FakeTv {
                     Proto.Message key = message.message(10);
                     final long code = key.integer(1, -1);
                     long direction = key.integer(2, 0);
+                    if (imeScenario && (features & 4) != 0 && direction == 3) {
+                        if (code == 23) {
+                            focusTap++;
+                            if (focusTap == 1 || focusTap % 2 == 1) { fieldCounter++; typed = ""; }
+                            write(socket, new Proto.Writer().message(21,
+                                    new Proto.Writer().number(1, imeCounter).number(2, fieldCounter)));
+                            write(socket, new Proto.Writer().message(20, new Proto.Writer().message(2,
+                                    new Proto.Writer().number(1, fieldCounter).number(3, 0).number(4, 0))));
+                            write(socket, new Proto.Writer().message(22, new Proto.Writer().message(2,
+                                    new Proto.Writer().number(1, fieldCounter).number(3, 0).number(4, 0))));
+                            System.out.println("IME_SHOW id=" + session + " field=" + fieldCounter
+                                    + " repeated=" + (focusTap % 2 == 0));
+                        } else if (code == 4) {
+                            write(socket, new Proto.Writer().message(20, new Proto.Writer()));
+                            System.out.println("IME_HIDE id=" + session);
+                        } else if (code == 67 && !typed.isEmpty()) {
+                            typed = typed.substring(0, typed.offsetByCodePoints(typed.length(), -1));
+                            System.out.println("IME_DELETE id=" + session + " remaining_utf16=" + typed.length());
+                        } else if (code == 66) System.out.println("IME_ENTER id=" + session);
+                    }
                     final String directionName = direction == 3 ? "SHORT" : direction == 1 ? "START_LONG"
                             : direction == 2 ? "END_LONG" : "UNKNOWN";
                     System.out.println("KEY id=" + session + " code=" + code + " direction=" + directionName
@@ -196,6 +220,27 @@ public final class FakeTv {
                                     + " code=" + code + " direction=" + directionName + " at_ms=" + elapsedMs());
                         }
                     }, 250, TimeUnit.MILLISECONDS));
+                } else if (message.has(21) && imeScenario && (features & 4) != 0) {
+                    Proto.Message batch = message.message(21);
+                    // A later ACK may be in flight while another committed chunk is already on TCP.
+                    long revision = batch.integer(1, 0);
+                    if (fieldCounter == 0 || revision < 7 || revision > imeCounter
+                            || batch.integer(2, 0) != fieldCounter) throw new IOException("Wrong IME counters");
+                    Proto.Message edit = batch.message(3);
+                    if (edit.integer(1, 0) != 1) throw new IOException("Unknown IME operation");
+                    Proto.Message object = edit.message(2);
+                    byte[] bytes = object.bytes(3);
+                    String text = StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
+                    KeyboardSession.validateCommit(text);
+                    if (object.integer(1, 0) != text.length() - 1 || object.integer(2, 0) != text.length() - 1)
+                        throw new IOException("Wrong UTF-16 positions");
+                    typed += text;
+                    System.out.println("IME_COMMIT id=" + session + " sequence=" + (++commits)
+                            + " field=" + fieldCounter + " revision=" + revision + " utf16=" + text.length() + " bytes=" + bytes.length);
+                    // ACK revision changes while the focused editor remains the same.
+                    imeCounter++;
+                    write(socket, new Proto.Writer().message(21,
+                            new Proto.Writer().number(1, imeCounter).number(2, fieldCounter)));
                 } else if (message.has(90)) {
                     String link = new String(message.message(90).bytes(1), java.nio.charset.StandardCharsets.UTF_8);
                     java.util.regex.Matcher picture = PICTURE_REQUEST.matcher(link);

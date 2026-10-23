@@ -107,13 +107,83 @@ bounded worker; regular key dispatch does not wait for them. Sync reports the
 remote connection first and refreshes the mode asynchronously. Query failures
 leave normal controls usable, and toggles are never automatically repeated.
 
-Ping, key, power, volume and app-link features are negotiated. Keyboard/IME and voice features are not requested. App-link support is intersected with the server’s advertised capabilities; a server without it can still receive normal keys. The remote becomes ready only after configuration and a start message; standby still permits a wake key. A single reader answers server pings while a session is open. The Android engine and service manage connection ownership; the standalone protocol layer does not start Android services.
+Ping, key, keyboard/IME, power, volume and app-link features are negotiated.
+Voice is not requested. Each requested feature is intersected with the server's
+advertised capabilities; a server without IME or app links can still receive
+normal keys. The remote becomes ready only after configuration and a start
+message; standby still permits a wake key. A single reader answers server pings
+while a session is open. The Android engine and service manage connection
+ownership; the standalone protocol layer does not start Android services.
+
+## Native keyboard input
+
+Android 0.6.0 and macOS 0.3.0 request the Remote v2 IME feature (4), using the
+[current wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remotemessage.proto)
+and [the reference client's text commits](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remote.py),
+consulted on 2026-10-22. Envelope field 20 supplies app/field context, field 21
+supplies the IME and field counters, and field 22 explicitly requests keyboard
+display. App information alone is not a show request. A valid field-22 message
+switches an open remote to keyboard mode; repeated messages for that same field
+do not undo the user's **Remote** choice. A new field can request keyboard mode
+again. **Keyboard** also opens the mode manually. When the service has not
+provided a focused editor with matching counters, the UI waits for a TV text
+field instead of guessing a destination or sending input to another app.
+
+Text is a stream of native input-method commits, not a local mirror or whole-field
+replacement. Marked/composing text stays on the phone or Mac until its input
+method commits. Each committed chunk uses field 21 with one edit-info entry:
+insert=1 and a RemoteImeObject containing the exact Unicode string. Its two
+positions are the final inserted UTF-16 unit's index (UTF-16 length minus one),
+following the established reference client's commit convention while using
+Android's UTF-16 indexing for non-BMP text. BareRemote does not invent unverified
+replacement or selection opcodes. Backspace, forward delete, Enter, Tab and
+cursor movement use the corresponding short Android key commands. The remote
+service does not acknowledge that a TV application applied a commit or key.
+
+Each input captures the authenticated connection and focused editor. Immediately
+before writing, the protocol rejects a changed connection, app, field, expired
+deadline or cancelled session. A newer IME counter for the same editor is used
+at the write, so a server acknowledgment does not discard later queued
+characters; it never redirects captured input to a different editor. IME
+operations share the existing serialized command writer, bounded queue and
+connection lifetime. Failed or uncertain input is never retried or carried into
+a replacement connection. Close, Sync, field loss and stale lifecycle
+completions invalidate the old editor. The Mac callback queue coalesces state
+updates and preserves a show identifier only for the current explicitly shown
+field, so an older show event cannot open an unrelated editor.
+
+TV-provided contents are parsed with frame/string/UTF-16 bounds and then
+discarded. They are never mirrored in the UI, logged or saved; this also avoids
+revealing passwords supplied by a TV service. A Mac commit is bounded to 4 KiB of
+UTF-8 and 2,048 UTF-16 units; Android allows 16 KiB and 4,096 UTF-16 units.
+Native composition is cleared on editor/lifecycle changes, and committed text
+has no local undo history. There is no clipboard
+monitor, keyboard service, idle polling or physical-TV probe.
+
+The macOS pure-state tests cover IME negotiation, zero counters, both message
+orders, explicit show versus app-only context, repeated show/manual override,
+stale app/field/counter messages, same-editor ACK advances, connection-scoped
+tokens, Unicode vectors, limits, malformed fields and close. The independent
+`NativeImeTv` loopback fixture validates exact Unicode frames and UTF-16
+positions over real Keychain mutual TLS, sequential commits across an ACK,
+single-delivery keyboard keys, deadline/stale-target rejection without a frame,
+field loss, unsupported IME with usable normal keys, and malformed IME shutdown.
+Run `python3 macos/Tests/test_loopback.py`. These mock results do not establish
+keyboard compatibility with the physical CSV4K TV.
 
 Frames are varint length-delimited, limited to 64 KiB and 4096 fields. The parser rejects truncation, integer overflow, invalid tags and deprecated group wire types. Unknown ordinary fields can be skipped. A remote connection has a shared five-second network deadline; incomplete frames also have a deadline. Connections require a numeric IP address so DNS cannot exceed that budget. An idle remote read expires after sixteen seconds. Long keys send start, wait 650 ms, and send end even when the calling worker is interrupted. A command is not retried by this layer.
 
 Run `python3 -m unittest discover -s tests -p 'test_*.py'`. The protocol suite has passed **156 assertions** covering independent wire/hash vectors, malformed and fragmented frames, actual loopback mutual TLS pairing, server pinning, ping responses, standby readiness, bounded long presses and the connect deadline. An input-registration regression drops keys received before the simulated device is ready, even if the connection remains open afterward; the startup wait lets exactly one key apply. A separate deferred-dispatch regression reproduces a received key being lost by immediate disconnect, then verifies that the delivery window applies exactly one key while answering pings. Cancellation and interruption remain prompt. Loopback tests do not establish compatibility with a physical TV or validate Android service lifecycle behavior. The engine suite also passes **55 assertions** against deterministic scheduling and network test doubles, covering rapid keys, shared ownership, Sync, timeouts, and cancellation. [The README](../README.md#prototype-limits-and-validation) distinguishes Android integration and hardware results.
 
-`tests/ProtocolCli.java` is an optional manual hardware harness. Compile it with `Proto.java`, `TvProtocol.java`, `PictureStateWire.java` and `PictureStateClient.java` using a Java 8+ JDK. Supply a test-only RSA PKCS12 client identity and its password through `BAREREMOTE_STORE_PASSWORD`. The `pair TV_IP client.p12 tv-pin.der` command waits for the TV code on standard input; `check` verifies readiness without sending a key. Only explicit `key ... KEYCODE` or `long ... KEYCODE` commands send input. Keep the identity and saved pin outside the source tree and do not distribute a paired identity with an APK.
+`tests/ProtocolCli.java` is an optional manual hardware harness. Compile it with
+`Proto.java`, `TvProtocol.java`, `PictureStateWire.java`, `PictureStateClient.java`,
+`KeyboardState.java` and `KeyboardSession.java` using a Java 8+ JDK. Supply a
+test-only RSA PKCS12 client identity and its password through
+`BAREREMOTE_STORE_PASSWORD`. The `pair TV_IP client.p12 tv-pin.der` command waits
+for the TV code on standard input; `check` verifies readiness without sending a
+key. Only explicit `key ... KEYCODE` or `long ... KEYCODE` commands send input.
+Keep the identity and saved pin outside the source tree and do not distribute a
+paired identity with an APK.
 
 For emulator integration, run `python3 tests/run_fake_tv.py` and enter `10.0.2.2` in the app. The fake server listens only on host loopback ports 6467/6466, prints a test pairing code, and requires a real mutual-TLS client certificate. `KEY` records receipt. Keys arriving within 200 ms after `RemoteStart` are discarded with `KEY_IGNORED_NOT_READY`; accepted keys produce `KEY_APPLIED` after a further 250 ms simulated dispatch delay only if the session remains alive. Disconnect cancels queued keys, so receipt alone is not a passing widget check. Its temporary certificate and in-memory pairing list disappear when it stops, so each restart requires pairing again. It never contacts a physical TV. This exercises the installed Android app, its Keystore identity, and widget command path without interrupting TV viewing; it does not establish physical-TV compatibility.
 

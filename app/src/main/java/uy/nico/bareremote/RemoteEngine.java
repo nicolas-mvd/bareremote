@@ -31,6 +31,7 @@ final class RemoteEngine {
         void onPaired();
         void onError(String message);
         default void onPictureState(String state) {}
+        default void onKeyboardState(KeyboardState state) {}
     }
     interface Completion { void done(String error); }
     private static RemoteEngine instance;
@@ -53,6 +54,7 @@ final class RemoteEngine {
     private final AtomicInteger generation = new AtomicInteger();
     private final AtomicInteger widgetGeneration = new AtomicInteger();
     private final AtomicInteger foregroundGeneration = new AtomicInteger();
+    private final AtomicInteger keyboardGeneration = new AtomicInteger();
     private final Object connectionLock = new Object();
     private volatile Listener listener;
     private volatile boolean foreground;
@@ -96,7 +98,27 @@ final class RemoteEngine {
     String status() { return status; }
     String pictureState() { return confirmedPicture; }
     boolean isReconnectingTo() { return addressReconnect != null; }
-    void setListener(Listener value) { listener = value; state(status); value.onPictureState(confirmedPicture); }
+    void setListener(Listener value) {
+        listener = value; state(status); value.onPictureState(confirmedPicture);
+        value.onKeyboardState(keyboardState());
+    }
+    KeyboardState keyboardState() {
+        TvProtocol.Remote connection = remote;
+        return foreground && connection != null && connection.isOpen()
+                ? connection.keyboardState() : KeyboardState.unavailable();
+    }
+    private void observeKeyboard(TvProtocol.Remote connection, int token) {
+        connection.setKeyboardListener(ignored -> publishKeyboard(connection, token));
+    }
+    private void publishKeyboard(TvProtocol.Remote source, int token) {
+        final int owner = foregroundGeneration.get();
+        main.post(() -> {
+            if (!current(token) || !foreground || owner != foregroundGeneration.get()
+                    || source != remote) return;
+            Listener target = listener;
+            if (target != null) target.onKeyboardState(keyboardState());
+        });
+    }
     void clearListener(Listener value) { if (listener == value) listener = null; }
 
     /** Start a fresh session without changing the saved pairing or phone identity. */
@@ -228,6 +250,7 @@ final class RemoteEngine {
                 }
                 host = request.address;
                 remote = request.candidate;
+                observeKeyboard(remote, request.token);
                 request.candidate = null;
                 request.completed.set(true);
                 addressReconnect = null;
@@ -279,7 +302,10 @@ final class RemoteEngine {
     }
 
     void resume() {
-        synchronized (connectionLock) { foreground = true; }
+        synchronized (connectionLock) {
+            foreground = true;
+            if (remote != null) publishKeyboard(remote, generation.get());
+        }
         if (isReconnectingTo()) return;
         if (pairingBusy) {
             if (pairing != null) notifyCode();
@@ -666,6 +692,64 @@ final class RemoteEngine {
         }, () -> complete(operation, "Too many taps. Try again."));
     }
 
+    /** Foreground-only keyboard work never reconnects or migrates to another field. */
+    void sendText(String text) {
+        try { KeyboardSession.validateCommit(text); }
+        catch (IllegalArgumentException invalid) { error(invalid.getMessage()); return; }
+        keyboardCommand(text, 0);
+    }
+    void sendKeyboardKey(int key) {
+        if (key != 67 && key != 112 && key != 66 && key != 21 && key != 22 && key != 61) {
+            error("Unknown keyboard control"); return;
+        }
+        keyboardCommand(null, key);
+    }
+    void cancelKeyboardInput() { keyboardGeneration.incrementAndGet(); }
+    private void keyboardCommand(String text, int key) {
+        final int keyboardToken = keyboardGeneration.get();
+        final TvProtocol.Remote connection;
+        final KeyboardState field;
+        final Operation operation;
+        synchronized (connectionLock) {
+            if (!foreground || pairingBusy || isReconnectingTo()) return;
+            connection = remote;
+            field = keyboardState();
+            if (connection == null || !field.canType()) {
+                error(field.supported ? "Select a text field on the TV first"
+                        : "This TV has not made its keyboard available. Tap Sync or select a text field.");
+                return;
+            }
+            operation = new Operation(generation.get(), null, false);
+        }
+        startTimeout(operation);
+        execute(() -> {
+            boolean writeAttempted = false;
+            try {
+                synchronized (connectionLock) {
+                    if (!canRun(operation) || keyboardToken != keyboardGeneration.get() || remote != connection || !connection.isOpen()) {
+                        complete(operation, "Keyboard input cancelled"); return;
+                    }
+                    if (!connection.keyboardState().sameField(field)) {
+                        complete(operation, "TV text field changed; type again"); return;
+                    }
+                    operation.writing = connection;
+                    writeAttempted = true;
+                }
+                if (text != null) connection.sendText(text, field);
+                else connection.sendKeyboardKey(key, field);
+                synchronized (connectionLock) { operation.writing = null; }
+                complete(operation, null, false);
+            } catch (Exception failure) {
+                synchronized (connectionLock) {
+                    operation.writing = null;
+                    if (writeAttempted) discard(connection);
+                }
+                // Messages describe metadata/delivery only; text is never logged or included.
+                complete(operation, message(failure));
+            }
+        }, () -> complete(operation, "Keyboard is busy. Type again."));
+    }
+
     private final class Operation {
         final int token;
         final Completion completion;
@@ -751,6 +835,7 @@ final class RemoteEngine {
                 throw new IOException("Control cancelled");
             }
             remote = connected;
+            observeKeyboard(connected, token);
             return connected;
         }
     }
@@ -758,7 +843,11 @@ final class RemoteEngine {
     /** Discard only this exact session; an old callback cannot close its replacement. */
     private void discard(TvProtocol.Remote connection) {
         synchronized (connectionLock) {
-            if (remote == connection) remote = null;
+            if (remote == connection) {
+                remote = null;
+                connection.setKeyboardListener(null);
+                publishKeyboard(null, generation.get());
+            }
             connection.close();
         }
     }
@@ -766,7 +855,8 @@ final class RemoteEngine {
         synchronized (connectionLock) {
             TvProtocol.Remote old = remote;
             remote = null;
-            if (old != null) old.close();
+            if (old != null) { old.setKeyboardListener(null); old.close(); }
+            publishKeyboard(null, generation.get());
         }
     }
     private boolean current(int token) { return generation.get() == token; }

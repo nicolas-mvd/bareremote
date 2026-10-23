@@ -1,4 +1,9 @@
-# App updates
+# Android app updates
+
+This page describes APK updates. For the native Mac app, see
+[manual macOS updates](MACOS_UPDATES.md), available from **BareRemote → Check for
+Updates…** and TV Setup in macOS 0.3.0 and newer. Android and macOS have separate
+release assets and manifests.
 
 BareRemote checks a small update manifest in its own public GitHub repository and downloads APKs from that repository's releases. No account or GitHub token is needed.
 
@@ -44,4 +49,4 @@ Use the built APK's actual version, byte count and SHA-256; do not copy values f
 
 ## Validation
 
-The update validation suites exercise 80 assertions per app: metadata parsing, official URL/size/hash policy, update versus current/older versions, package and signer mismatch rejection on API 26 and 35, stale callbacks, prompt cancellation during blocked network cleanup, and total deadlines. Emulator checks exercised real GitHub metadata and APK downloads, verification, the unknown-app-source permission return, Android's confirmation, and a completed installation. These checks use isolated lower-version fixtures with the production updater code to make an existing published release eligible; they do not demonstrate every manufacturer's installer.
+The Android update validation suite exercises 80 assertions: metadata parsing, official URL/size/hash policy, update versus current/older versions, package and signer mismatch rejection on API 26 and 35, stale callbacks, prompt cancellation during blocked network cleanup, and total deadlines. Emulator checks exercised real GitHub metadata and APK downloads, verification, the unknown-app-source permission return, Android's confirmation, and a completed installation. These checks use isolated lower-version fixtures with the production updater code to make an existing published release eligible; they do not demonstrate every manufacturer's installer.
