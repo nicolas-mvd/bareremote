@@ -52,6 +52,8 @@ in Edit Widgets. It is excluded from the normal app bundle. Developers can opt
 in with `BAREREMOTE_INCLUDE_WIDGETKIT=1 ./macos/build.sh`; this requires macOS 14+
 for the extension and does not replace the built-in desktop remote.
 
+**[Download the 0.3.0 prototype](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.3.0-prototype/BareRemote-macOS.zip)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.3.0-prototype).
+
 The build uses the explicitly selected `BAREREMOTE_SIGN_IDENTITY`, or a locally
 saved selection in `.keys/macos-signing-identity`. Without either it uses an ad
 hoc signature and prints a warning. Apple recommends an Apple-issued signing
