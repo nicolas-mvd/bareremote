@@ -124,6 +124,33 @@ final class PictureStateClient {
     void close() { closed = true; ready.countDown(); }
 }
 """,
+    "uy/nico/bareremote/TvDiscovery.java": """
+package uy.nico.bareremote;
+final class TvDiscovery {
+    static final int MAX_RESULTS=32;
+    static final java.util.List<Device> offered=new java.util.ArrayList<>();
+    static int starts,closes;
+    static long timeout;
+    static boolean hold;
+    static TvDiscovery active;
+    interface Listener { void onChanged(java.util.List<Device> devices,boolean scanning,String message); }
+    static final class Device { final String host; Device(String host) { this.host=host; } }
+    Listener listener;
+    boolean closed;
+    TvDiscovery(android.content.Context context) {}
+    void start(Listener value,long duration) {
+        starts++; timeout=duration; active=this; listener=value;
+        value.onChanged(new java.util.ArrayList<>(offered),true,"Scanning");
+        if (!hold) value.onChanged(new java.util.ArrayList<>(offered),false,"Done");
+    }
+    void close() { if(!closed) {closed=true;closes++;} }
+    static void emit(String... hosts) {
+        for(String host:hosts)offered.add(new Device(host));
+        if(active!=null && !active.closed) active.listener.onChanged(new java.util.ArrayList<>(offered),true,"Scanning");
+    }
+    static void reset() {offered.clear();starts=0;closes=0;timeout=0;hold=false;active=null;}
+}
+""",
     "uy/nico/bareremote/TvProtocol.java": """
 package uy.nico.bareremote;
 import java.util.concurrent.*;
@@ -148,6 +175,8 @@ final class TvProtocol {
     }
     static final class Remote {
         static final java.util.List<Remote> connections = new CopyOnWriteArrayList<>();
+        static final java.util.List<Integer> budgets = new CopyOnWriteArrayList<>();
+        static volatile java.util.function.Consumer<String> readyHook;
         static final java.util.List<Integer> keys = new CopyOnWriteArrayList<>();
         static final java.util.List<Boolean> modes = new CopyOnWriteArrayList<>();
         static final java.util.List<String> inputs = new CopyOnWriteArrayList<>();
@@ -179,9 +208,20 @@ final class TvProtocol {
             this.host=host; this.port=port; this.pin=pin.clone(); this.identity=identity;
         }
         static Remote connect(String host,int port,byte[] pin,PhoneIdentity identity) throws Exception {
+            return connect(host,port,pin,identity,5000,()->false);
+        }
+        static Remote connect(String host,int port,byte[] pin,PhoneIdentity identity,int timeout,java.util.function.BooleanSupplier cancelled) throws Exception {
+            if(cancelled.getAsBoolean())throw new java.io.IOException("Control cancelled");
+            budgets.add(timeout);
             Remote next=new Remote(host,port,pin,identity); connections.add(next);
             CountDownLatch gate=connectGate; connectGate=null;
-            if (gate!=null) { connectEntered.countDown(); gate.await(); }
+            if (gate!=null) {
+                connectEntered.countDown();
+                while(!gate.await(10,TimeUnit.MILLISECONDS)) {
+                    if(cancelled.getAsBoolean()){next.close();throw new java.io.IOException("Control cancelled");}
+                }
+            }
+            if(cancelled.getAsBoolean()){next.close();throw new java.io.IOException("Control cancelled");}
             // Model adapter failures only. The protocol suite separately exercises
             // the real mutual-TLS certificate pin on loopback sockets.
             if (host.equals(failHost) || host.equals(pinRejectHost)) {
@@ -189,6 +229,7 @@ final class TvProtocol {
                 throw new java.io.IOException(host.equals(pinRejectHost)
                         ? "TV certificate changed. Pair again in Setup." : "Connection refused");
             }
+            if(readyHook!=null)readyHook.accept(host);
             return next;
         }
         boolean isOpen() { return open; }
@@ -209,7 +250,7 @@ final class TvProtocol {
         }
         void sendLongKey(int key) throws Exception { sendKey(key); }
         void close() { open=false; closed.countDown(); }
-        static void reset() { connections.clear(); texts.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
+        static void reset() { budgets.clear(); readyHook=null; connections.clear(); texts.clear(); keys.clear(); modes.clear(); inputs.clear(); pictureRequests.clear(); pictureToggles.clear(); holdPictureReplies=false; unsupportedPicture=false; connectGate=null; connectEntered=null; writeEntered=null; blockWrite=false; failHost=null; pinRejectHost=null; }
     }
 }
 """,

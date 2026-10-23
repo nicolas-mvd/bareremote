@@ -199,9 +199,11 @@ public final class TVRemote: @unchecked Sendable {
     }
 
     public static func connect(host: String, port: Int = 6466, pin: Data, identity: ClientIdentity,
+                               timeout: TimeInterval = 5,
                                cancelled: @escaping () -> Bool = { false }) throws -> TVRemote {
         guard !pin.isEmpty else { throw TVProtocolError.unsupported("Pair with the TV first.") }
-        let deadline = TLSTransport.deadline(after: 5)
+        guard timeout.isFinite, timeout > 0 else { throw TVProtocolError.timedOut }
+        let deadline = TLSTransport.deadline(after: min(5, timeout))
         let transport = try TLSTransport.connect(host: host, port: port, pin: pin, identity: identity,
                                                  deadline: deadline, cancelled: cancelled)
         let remote = TVRemote(transport: transport, cancelled: cancelled)
@@ -344,7 +346,7 @@ public final class TVRemote: @unchecked Sendable {
         if message.has(1) {
             let negotiated = try message.message(1).integer(1) & Self.requestedFeatures
             guard negotiated & 2 != 0 else { throw TVProtocolError.unsupported("The TV remote service does not support keys.") }
-            let device = try Proto.Writer().number(3, 1).text(4, "1").text(5, "uy.nico.bareremote.macos").text(6, "0.3.1")
+            let device = try Proto.Writer().number(3, 1).text(4, "1").text(5, "uy.nico.bareremote.macos").text(6, "0.3.2")
             try send(Proto.Writer().message(1, Proto.Writer().number(1, negotiated).message(2, device)), deadline: deadline)
             state.lock()
             features = negotiated

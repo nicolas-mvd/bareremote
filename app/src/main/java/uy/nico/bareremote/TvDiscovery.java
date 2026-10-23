@@ -64,7 +64,11 @@ public final class TvDiscovery {
     }
 
     /** Called on the main thread. Starting again replaces the previous browse. */
-    public void start(Listener listener) {
+    public void start(Listener listener) { start(listener, SCAN_TIMEOUT_MS); }
+
+    /** A shorter browse for an explicit failed-connection recovery; same validation and cleanup. */
+    void start(Listener listener, long timeoutMs) {
+        if (timeoutMs <= 0 || timeoutMs > SCAN_TIMEOUT_MS) throw new IllegalArgumentException("scan timeout");
         if (listener == null) throw new IllegalArgumentException("listener");
         close();
         Scan scan = new Scan(listener);
@@ -75,7 +79,7 @@ public final class TvDiscovery {
         if (nsd == null) { finish(scan, SCAN_ERROR); return; }
         if (!acquireMulticast(scan)) { finish(scan, SCAN_ERROR); return; }
         scan.timeout = () -> finish(scan, null);
-        main.postDelayed(scan.timeout, SCAN_TIMEOUT_MS);
+        main.postDelayed(scan.timeout, timeoutMs);
         scan.discovery = new NsdManager.DiscoveryListener() {
             @Override public void onDiscoveryStarted(String type) { }
 

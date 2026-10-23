@@ -47,6 +47,7 @@ public final class ProtocolTest {
         testDeliveryWaitCancellation(context, identity, pin);
         testImmediateClose(context, identity, pin);
         testPinAndTimeout(context, identity, pin);
+        testBoundedConnectCancellation(context, identity, pin);
         System.out.println("Protocol: " + assertions + " assertions passed");
     }
 
@@ -455,6 +456,100 @@ public final class ProtocolTest {
         long elapsed = (System.nanoTime() - start) / 1000000L;
         check(elapsed >= 4500 && elapsed < 6500, "whole remote connect has five-second budget");
         stalled.finish();
+    }
+
+    /** Discovery candidates share an outer budget and may be abandoned before any key is written. */
+    private static void testBoundedConnectCancellation(SSLContext context, TvProtocol.Identity identity,
+            byte[] pin) throws Exception {
+        for (final int budget : new int[] {0, -1, 5001}) {
+            fails(() -> TvProtocol.Remote.connect("127.0.0.1", 1, pin, identity, budget, () -> false),
+                    "invalid candidate connection budget rejected");
+        }
+        try (java.net.ServerSocket unopened = new java.net.ServerSocket(0, 1,
+                java.net.InetAddress.getByName("127.0.0.1"))) {
+            unopened.setSoTimeout(100);
+            fails(() -> TvProtocol.Remote.connect("127.0.0.1", unopened.getLocalPort(), pin,
+                    identity, 1000, () -> true), "pre-cancelled candidate does not start a connection");
+            try (java.net.Socket unexpected = unopened.accept()) {
+                throw new AssertionError("Pre-cancelled candidate opened TCP");
+            } catch (java.net.SocketTimeoutException expected) {
+                check(true, "pre-cancelled candidate sends no TCP traffic");
+            }
+        }
+
+        Server shortBudget = new Server(context, socket -> {
+            // Complete TLS, then withhold RemoteStart. The caller's shorter
+            // deadline must include protocol readiness, not just TCP/TLS.
+            try { check(socket.getInputStream().read() == -1, "candidate timeout closes pending transport"); }
+            catch (java.net.SocketException closed) { check(true, "candidate timeout aborts pending transport"); }
+        });
+        long started = System.nanoTime();
+        fails(() -> TvProtocol.Remote.connect("127.0.0.1", shortBudget.port(), pin,
+                identity, 400, () -> false), "candidate readiness respects caller budget");
+        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+        check(elapsed >= 250 && elapsed < 1500, "short candidate budget bounds whole readiness attempt");
+        shortBudget.finish();
+
+        final java.util.concurrent.atomic.AtomicBoolean cancelled = new java.util.concurrent.atomic.AtomicBoolean();
+        CountDownLatch readyForProtocol = new CountDownLatch(1);
+        Server waiting = new Server(context, socket -> {
+            write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 99)));
+            check(read(socket).has(1), "candidate completed TLS and answered configuration");
+            readyForProtocol.countDown();
+            try { check(socket.getInputStream().read() == -1, "cancelled candidate sends no later protocol request or key"); }
+            catch (java.net.SocketException closed) { check(true, "cancelled candidate aborts protocol read"); }
+        });
+        java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        Thread caller = new Thread(() -> {
+            try {
+                TvProtocol.Remote unexpected = TvProtocol.Remote.connect("127.0.0.1", waiting.port(), pin,
+                        identity, 3000, cancelled::get);
+                unexpected.close();
+                failure.set(new AssertionError("Cancelled candidate returned a session"));
+            } catch (IOException expected) {
+                // Cancellation closes an in-progress protocol read, after TLS.
+            } catch (Throwable unexpected) { failure.set(unexpected); }
+        }, "Candidate-connect-test");
+        caller.setDaemon(true);
+        caller.start();
+        check(readyForProtocol.await(2, TimeUnit.SECONDS), "candidate reached protocol readiness wait");
+        Thread.sleep(75); // Let the client block in its next protocol read before cancellation.
+        started = System.nanoTime();
+        cancelled.set(true);
+        caller.join(750);
+        check(!caller.isAlive(), "cancellation promptly aborts blocked protocol readiness");
+        check(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 750,
+                "candidate cancellation does not wait for full connection timeout");
+        check(failure.get() == null, "cancelled candidate returns only a connection failure");
+        waiting.finish();
+
+        final java.util.concurrent.atomic.AtomicBoolean finishedOwner = new java.util.concurrent.atomic.AtomicBoolean();
+        Server adopted = new Server(context, socket -> {
+            startRemote(socket);
+            Proto.Message key = read(socket).message(10);
+            check(key.integer(1, -1) == 23 && key.integer(2, -1) == 3,
+                    "adopted candidate accepts exactly one later explicit key");
+            try { check(socket.getInputStream().read() == -1, "adopted session closes without a duplicate key"); }
+            catch (java.net.SocketException closed) { check(true, "adopted session closes without replay"); }
+        });
+        TvProtocol.Remote remote = TvProtocol.Remote.connect("127.0.0.1", adopted.port(), pin,
+                identity, 2000, finishedOwner::get);
+        finishedOwner.set(true);
+        Thread.sleep(100);
+        check(remote.isOpen(), "completed connect cancellation cannot close adopted shared session");
+        remote.sendKey(23);
+        remote.close();
+        adopted.finish();
+        long watcherDeadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(500);
+        boolean watcherAlive;
+        do {
+            watcherAlive = false;
+            for (Thread thread : Thread.getAllStackTraces().keySet()) {
+                if (thread.isAlive() && thread.getName().equals("BareRemote-connect-cancel")) watcherAlive = true;
+            }
+            if (watcherAlive) Thread.sleep(10);
+        } while (watcherAlive && System.nanoTime() < watcherDeadline);
+        check(!watcherAlive, "candidate cancellation leaves no idle watcher");
     }
 
     private static void testImmediateClose(SSLContext context, TvProtocol.Identity identity, byte[] pin) throws Exception {

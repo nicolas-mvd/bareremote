@@ -27,7 +27,7 @@ the Android releases below.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup** → **Scan for TVs**, select your TV, then tap **Pair**. You can also enter its IPv4 address from the TV’s network settings.
 3. Enter the six-character code shown on the TV. **Pair each phone separately.** After pairing, opening the app takes you directly to the remote.
 
-The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, scan and select it again to reconnect using your saved pairing. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
+The TV must provide Android TV Remote Service v2. Pairing uses the TV’s normal remote service; no ADB or developer mode is needed for everyday use. If the TV’s address changes, a failed connection now triggers a short scan to recover it using your saved pairing. **Forget TV** removes this phone’s saved TV connection locally; it does not remove the phone from the TV’s trusted-device list.
 
 ## Find your TV
 
@@ -56,7 +56,7 @@ the app leaves the screen. There are no background scans or subnet port sweeps.
 
 Controls: a circular D-pad with OK, Back, Home, Input, volume down/up, mute, and power. Hold a **direction or volume button** in the app to repeat presses: the first press sends immediately, then repetition starts after 400 ms, up to roughly eight presses per second. Releasing, dragging off the pad or volume button, leaving the app, or a connection error stops repetition. A held button never reconnects automatically after a failure. Hold **OK** for a long press, including BareHome’s mode editor. The PlayStation icon asks BareHome 1.1 or newer to open the TV’s native source/input menu, including its HDMI and CEC device names; it does not assume which HDMI socket holds a PS5. This requires a TV with the native `com.android.tv.action.VIEW_INPUTS` action. The standard Android input key does nothing on our tested TV, so this button uses the native picker bridge. Play/Pause and Add widget are available under the gear (Setup). Button behavior depends on the TV and current app. Power can wake a TV only while its remote service remains reachable over the network.
 
-If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection to the saved TV using the existing pairing; no TV code is needed. Sync does not search for TVs or discover a changed IP address.
+If the connection gets stuck, tap the **Sync icon** in the centered green strip of the app or widget. It opens a fresh connection using the existing pairing. From Android 0.6.3 and macOS 0.3.2, an unreachable saved address triggers one short local discovery scan. BareRemote checks discovered addresses against the saved TV certificate, reconnects to the same TV, and saves its new address automatically. Opening the remote or starting a new app/widget connection uses the same recovery. No TV code or manual scan is needed when discovery finds the paired TV. If discovery is blocked or the TV is off, the app reports the failure and manual Setup remains available. There are no idle scans; a key, text commit or toggle whose delivery is uncertain is never sent again.
 
 ## Type on your TV
 
@@ -312,3 +312,14 @@ real TV field exactly once. SmartTube’s 14 native Delete actions restored its
 original empty query with authenticated cursor feedback. All known test words
 were confirmed absent afterward. These are emulator-to-physical-TV checks; no
 physical phone was connected.
+
+Version **0.6.3** adds automatic recovery when a paired TV’s address changes. A
+failed user-requested connection triggers one short native discovery scan and
+checks candidate addresses against the saved certificate before saving a new
+address. The seven host suites pass **1,207 assertions** (232 protocol, 515 engine,
+220 discovery, 81 repeat, 39 multi-client, 40 picture state and 80 updater). The
+exact signed APK also passes **65 native Android assertions** using the selected
+emulator’s real Keystore/TLS identity and native app input against the loopback
+TV. Recovery-specific tests cover wrong pins, new addresses, cancellation,
+failed saves, candidate limits, expired commands and no duplicate delivery.
+No physical TV address was changed for these checks.

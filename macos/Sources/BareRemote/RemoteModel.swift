@@ -288,27 +288,54 @@ final class OperationGate: @unchecked Sendable {
             } catch { self.report(error, revision: revision) }
         }
     }
-    func sync() { guard let saved else { openSetup(); return }; connect(to: saved.host, name: saved.name, saveAddress: false) }
+    func sync() { guard let saved else { openSetup(); return }; connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true) }
     func reconnect() { connect(to: host.trimmingCharacters(in: .whitespacesAndNewlines), name: tvName, saveAddress: true) }
-    private func connect(to address: String, name: String, saveAddress: Bool) {
+    private func connect(to address: String, name: String, saveAddress: Bool, recoverAddress: Bool = false) {
         guard let saved else { return }
         guard validateAddress(address) else { return }
         reset(); busy = true; status = "Connecting…"; detail = ""
         let token = gate, revision = generation
+        // This private browser never changes Setup's explicit scan or trusts
+        // its labels. The gate stops it even if a main-thread start is delayed.
+        let recoveryDiscovery = TVDiscovery()
+        let scan: () -> TVRecoveryCandidates = {
+            let candidates = TVRecoveryCandidates {
+                DispatchQueue.main.async { recoveryDiscovery.stop() }
+            }
+            token.own { candidates.stop() }
+            DispatchQueue.main.async {
+                guard self.generation == revision, !token.cancelled else { candidates.stop(); return }
+                self.status = "Looking for your TV…"
+                recoveryDiscovery.start(duration: TVConnectionRecovery.scanTimeout,
+                                        found: { candidates.offer($0.host) },
+                                        finished: { candidates.finish() })
+            }
+            return candidates
+        }
         worker.async {
             do {
                 guard !token.cancelled else { return }
                 let identity = try ClientIdentity.loadOrCreate()
-                let session = try TVRemote.connect(host: address, pin: saved.certificate, identity: identity, cancelled: { token.cancelled })
-                token.own { session.close() }
+                let result = try TVConnectionRecovery.connect(host: address, recover: recoverAddress,
+                                                               cancelled: { token.cancelled },
+                                                               open: { $0.isOpen }, close: { $0.close() },
+                                                               connect: { candidate, timeout in
+                    let session = try TVRemote.connect(host: candidate, pin: saved.certificate,
+                                                       identity: identity, timeout: timeout,
+                                                       cancelled: { token.cancelled })
+                    token.own { session.close() }
+                    return session
+                }, scan: scan)
+                let session = result.session, connectedAddress = result.host
                 DispatchQueue.main.async {
                     guard self.generation == revision, !token.cancelled else { return }
                     do {
                         guard session.isOpen else { throw TVProtocolError.closed }
-                        if saveAddress {
-                            let updated = SavedTV(host: address, name: name, certificate: saved.certificate)
+                        if saveAddress || connectedAddress != saved.host {
+                            let updated = SavedTV(host: connectedAddress, name: name, certificate: saved.certificate)
                             try updated.save(); self.saved = updated
                         }
+                        self.host = connectedAddress; self.tvName = name
                         session.onDisconnect = { [weak self] in
                             DispatchQueue.main.async {
                                 guard let self, self.generation == revision else { return }

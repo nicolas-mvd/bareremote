@@ -18,6 +18,12 @@ public final class EngineTest {
     private static int assertions;
 
     public static void main(String[] args) throws Exception {
+        automaticAddressRecovery();
+        automaticRecoveryOwnerCancellation();
+        automaticRecoveryCandidateCancellation();
+        automaticRecoveryPersistenceAndNoMatch();
+        automaticRecoveryLimitsAndExpiredCommands();
+        automaticRecoveryDoesNotReplayWrites();
         keyboardForegroundAndACKs();
         keyboardCancellationAndStaleCallbacks();
         burstAndOwnership();
@@ -55,6 +61,167 @@ public final class EngineTest {
         changedAddressRejectsConcurrentControls();
         changedAddressCancelsOldCommands();
         System.out.println("Engine tests: " + assertions + " assertions passed");
+    }
+
+    private static void automaticAddressRecovery() throws Exception {
+        for (int scenario=0;scenario<4;scenario++) {
+            Context context=new Context(); RemoteEngine engine=engine(context);
+            try {
+                TvProtocol.Remote.failHost="192.0.2.1";
+                TvProtocol.Remote.pinRejectHost="192.0.2.8";
+                TvDiscovery.emit("192.0.2.1","192.0.2.8","192.0.2.9","192.0.2.9");
+                List<String> results=new ArrayList<>();
+                if(scenario==0)engine.resume();
+                else {
+                    engine.setWidgetSessionActive(true);
+                    if(scenario==1)engine.reconnect(results::add);
+                    else if(scenario==2)engine.sendWidgetKey(22,results::add);
+                    else engine.togglePictureMode(results::add);
+                }
+                idle(engine); Handler.advance(750); idle(engine);
+                check("192.0.2.9".equals(engine.host()),"explicit open/Sync/widget/toggle recovers changed IP "+scenario);
+                savedTrust(context,"192.0.2.9","recovery saves only host and preserves pairing "+scenario);
+                check(TvDiscovery.starts==1 && TvDiscovery.closes==1 && TvDiscovery.timeout==3000,
+                        "one short scan closes after authenticated recovery "+scenario);
+                check(TvProtocol.Remote.connections.size()==3 && !TvProtocol.Remote.connections.get(0).isOpen()
+                        && !TvProtocol.Remote.connections.get(1).isOpen() && TvProtocol.Remote.connections.get(2).isOpen(),
+                        "unreachable old address and wrong pin rejected before correct candidate "+scenario);
+                check(TvProtocol.Remote.budgets.equals(java.util.Arrays.asList(3000,2000,2000)),
+                        "initial and candidate budgets are bounded "+scenario);
+                check(TvProtocol.Remote.connections.stream().allMatch(c->java.util.Arrays.equals(c.pin,new byte[]{1}))
+                        && TvProtocol.Pairing.starts==0,"every candidate uses saved pin, never requests pairing "+scenario);
+                check(TvProtocol.Remote.keys.equals(scenario==2?java.util.Arrays.asList(22):java.util.Collections.emptyList()),
+                        "original widget key delivered once only after successful recovery "+scenario);
+                check(TvProtocol.Remote.pictureToggles.stream().filter(v->v).count()==(scenario==3?1:0),
+                        "picture toggle is never duplicated during recovery "+scenario);
+                if(scenario!=0)waitFor(()->results.size()==1);
+                if(scenario!=0)check(results.get(0)==null,"recovered action completes once "+scenario);
+            } finally {shutdown(engine);}
+        }
+    }
+
+    private static void automaticRecoveryOwnerCancellation() throws Exception {
+        for(int scenario=0;scenario<4;scenario++) {
+            Context context=new Context(); RemoteEngine engine=engine(context);
+            try {
+                TvProtocol.Remote.failHost="192.0.2.1"; TvDiscovery.hold=true;
+                engine.resume();
+                waitFor(()->TvDiscovery.starts==1);
+                engine.setWidgetSessionActive(true);
+                if(scenario==0)engine.pause();
+                else if(scenario==1)engine.forget();
+                else if(scenario==2)engine.cancelPairing();
+                else { Handler.advance(10000); }
+                TvDiscovery.emit("192.0.2.9"); idle(engine);
+                check(TvDiscovery.closes==1 && TvProtocol.Remote.connections.size()==1,
+                        "cancelled original owner closes browse and cannot start stale candidate "+scenario);
+                check(scenario==1?!engine.hasSavedTv():"192.0.2.1".equals(engine.host()),
+                        "cancelled browse cannot replace trust while another owner stays active "+scenario);
+                check(TvProtocol.Remote.keys.isEmpty() && TvProtocol.Pairing.starts==0,
+                        "cancelled recovery sends no keys or pairing "+scenario);
+            } finally {shutdown(engine);}
+        }
+        Context context=new Context(); RemoteEngine engine=engine(context);
+        try {
+            engine.setWidgetSessionActive(true); TvProtocol.Remote.failHost="192.0.2.1";
+            TvDiscovery.emit("192.0.2.9");
+            TvProtocol.Remote.readyHook=address->{if("192.0.2.9".equals(address))engine.setWidgetSessionActive(false);};
+            List<String> result=new ArrayList<>();engine.sendWidgetKey(22,result::add);idle(engine);
+            savedTrust(context,"192.0.2.1","candidate ready after Stop cannot persist new IP");
+            check(TvProtocol.Remote.keys.isEmpty() && !TvProtocol.Remote.connections.get(1).isOpen(),
+                    "ready candidate cancelled before adoption closes without writing");
+            check(result.size()==1 && "Control cancelled".equals(result.get(0)),"cancelled candidate completes once");
+        }finally{shutdown(engine);}
+    }
+
+    private static void automaticRecoveryCandidateCancellation() throws Exception {
+        for(int scenario=0;scenario<2;scenario++) {
+            Context context=new Context();RemoteEngine engine=engine(context);CountDownLatch release=null;
+            try {
+                TvProtocol.Remote.failHost="192.0.2.1";TvDiscovery.hold=true;
+                List<String> result=new ArrayList<>();
+                if(scenario==0){engine.setWidgetSessionActive(true);engine.sendWidgetKey(22,result::add);}
+                else engine.resume();
+                waitFor(()->TvDiscovery.starts==1);
+                release=gateNextConnection();TvDiscovery.emit("192.0.2.9");
+                check(TvProtocol.Remote.connectEntered.await(2,TimeUnit.SECONDS),"recovery candidate entered pending authenticated connect "+scenario);
+                if(scenario==0)engine.setWidgetSessionActive(false);
+                else {engine.setWidgetSessionActive(true);engine.pause();}
+                idle(engine);
+                check(!TvProtocol.Remote.connections.get(1).isOpen() && TvDiscovery.closes==1,
+                        "original owner cancellation closes pending candidate and browse "+scenario);
+                savedTrust(context,"192.0.2.1","cancelled pending candidate never saves IP "+scenario);
+                check(TvProtocol.Remote.keys.isEmpty() && TvProtocol.Pairing.starts==0,
+                        "cancelled candidate cannot deliver original command or request pairing "+scenario);
+                if(scenario==0)check(result.size()==1 && "Control cancelled".equals(result.get(0)),"pending candidate cancellation completes original key once");
+            }finally{if(release!=null)release.countDown();shutdown(engine);}
+        }
+    }
+
+    private static void automaticRecoveryPersistenceAndNoMatch() throws Exception {
+        for(int scenario=0;scenario<3;scenario++) {
+            Context context=new Context();RemoteEngine engine=engine(context);
+            try {
+                engine.setWidgetSessionActive(true);TvProtocol.Remote.failHost="192.0.2.1";
+                if(scenario!=0)TvDiscovery.emit("192.0.2.9");
+                if(scenario==1)TvProtocol.Remote.pinRejectHost="192.0.2.9";
+                if(scenario==2)context.getSharedPreferences("remote",Context.MODE_PRIVATE).failNextCommit=true;
+                List<String> result=new ArrayList<>();engine.sendWidgetKey(22,result::add);idle(engine);
+                check(result.size()==1 && result.get(0)!=null,"no-match/wrong-pin/save failure returns once "+scenario);
+                if(scenario==2)check(result.get(0).contains("Could not save the TV address"),
+                        "verified TV persistence failure is reported distinctly from network failure");
+                savedTrust(context,"192.0.2.1","failed auto recovery preserves stored trust "+scenario);
+                check("192.0.2.1".equals(engine.host()) && TvProtocol.Remote.keys.isEmpty()
+                        && TvProtocol.Remote.connections.stream().noneMatch(c->c.isOpen()),"failed recovery discards every candidate without writing "+scenario);
+                check(TvDiscovery.starts==1 && TvDiscovery.closes==1 && TvProtocol.Pairing.starts==0,
+                        "failed recovery stops instead of rescanning or pairing "+scenario);
+            }finally{shutdown(engine);}
+        }
+    }
+
+    private static void automaticRecoveryLimitsAndExpiredCommands() throws Exception {
+        RemoteEngine engine=engine();
+        try {
+            engine.setWidgetSessionActive(true);TvProtocol.Remote.failHost="192.0.2.1";
+            for(int n=2;n<=9;n++)TvDiscovery.emit("192.0.2."+n);
+            TvProtocol.Remote.readyHook=host->TvProtocol.Remote.connections.get(TvProtocol.Remote.connections.size()-1).close();
+            List<String> result=new ArrayList<>();engine.sendWidgetKey(22,result::add);idle(engine);
+            check(TvProtocol.Remote.connections.size()==5 && TvProtocol.Remote.connections.stream().noneMatch(c->c.isOpen()),
+                    "auto recovery checks at most four distinct candidates and closes rejected readiness");
+            check(result.size()==1 && result.get(0)!=null && TvDiscovery.starts==1,"candidate bound ends recovery once");
+        }finally{shutdown(engine);}
+        engine=engine();
+        try {
+            engine.setWidgetSessionActive(true);TvProtocol.Remote.failHost="192.0.2.1";TvDiscovery.hold=true;
+            List<String> result=new ArrayList<>();engine.sendWidgetKey(22,result::add);
+            waitFor(()->TvDiscovery.starts==1);
+            Handler.advance(6999);check(result.isEmpty(),"pending original key keeps original seven second deadline");
+            Handler.advance(1);TvDiscovery.emit("192.0.2.9");idle(engine);
+            check(result.size()==1 && result.get(0)!=null && TvProtocol.Remote.keys.isEmpty(),
+                    "recovery never extends original key deadline or delivers an expired key");
+            check(TvDiscovery.closes==1 && TvProtocol.Remote.connections.size()==1,"seven second expiry closes browse before stale candidate");
+        }finally{shutdown(engine);}
+    }
+
+    private static void automaticRecoveryDoesNotReplayWrites() throws Exception {
+        RemoteEngine engine=engine();
+        try {
+            engine.setWidgetSessionActive(true);TvProtocol.Remote.blockWrite=true;
+            TvProtocol.Remote.writeEntered=new CountDownLatch(1);
+            List<String> result=new ArrayList<>();engine.sendWidgetKey(22,result::add);
+            check(TvProtocol.Remote.writeEntered.await(2,TimeUnit.SECONDS),"uncertain write entered");
+            Handler.advance(7000);idle(engine);
+            check(TvDiscovery.starts==0 && TvProtocol.Remote.connections.size()==1 && result.size()==1,
+                    "failed write never scans, reconnects or replays uncertain command");
+        }finally{shutdown(engine);}
+        engine=engine();
+        try {
+            engine.resume();idle(engine);TvProtocol.Remote.connections.get(0).close();
+            TvProtocol.Remote.failHost="192.0.2.1";TvDiscovery.emit("192.0.2.9");
+            engine.sendRepeatingKey(22,engine.repeatingSession(),error->{});engine.sendText("discard");idle(engine);
+            check(TvDiscovery.starts==0 && TvProtocol.Remote.connections.size()==1 && TvProtocol.Remote.texts.isEmpty(),
+                    "held repeats and keyboard commits never discover or migrate across connections");
+        }finally{shutdown(engine);}
     }
 
     private static void keyboardForegroundAndACKs() throws Exception {
@@ -129,6 +296,7 @@ public final class EngineTest {
         Handler.reset();
         TvProtocol.Remote.reset();
         TvProtocol.Pairing.reset();
+        TvDiscovery.reset();
         Constructor<RemoteEngine> constructor = RemoteEngine.class.getDeclaredConstructor(Context.class);
         constructor.setAccessible(true);
         return constructor.newInstance(context);
@@ -603,7 +771,10 @@ public final class EngineTest {
     }
 
     private static void idle(RemoteEngine engine) throws Exception {
-        worker(engine).submit(() -> {}).get(2, TimeUnit.SECONDS);
+        java.util.concurrent.Future<?> barrier = worker(engine).submit(() -> {});
+        long deadline=System.nanoTime()+TimeUnit.SECONDS.toNanos(2);
+        while(!barrier.isDone() && System.nanoTime()<deadline) { Handler.drain(); Thread.sleep(1); }
+        barrier.get(1, TimeUnit.SECONDS);
         Handler.drain();
     }
 

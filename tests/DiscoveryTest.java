@@ -16,6 +16,7 @@ public final class DiscoveryTest {
     private static final String TYPE="_androidtvremote2._tcp.";
 
     public static void main(String[] args) throws Exception {
+        shortRecoveryScan();
         serviceTypeAndSerialResolution();
         resolvedAddressValidation();
         multipleAddressAndSnapshotIsolation();
@@ -31,6 +32,22 @@ public final class DiscoveryTest {
         unavailablePlatformServices();
         reentrantListenerAndQueuedCancellation();
         System.out.println("Discovery tests: "+assertions+" assertions passed");
+    }
+
+    private static void shortRecoveryScan() throws Exception {
+        Fixture f=new Fixture();
+        f.discovery.start((devices,scanning,message)->f.events.add(new Event(devices,scanning,message)),3000);
+        f.found(service("TV",TYPE,null,0));f.resolve(0,"192.168.1.20",6466);
+        Handler.advance(2999);
+        check(f.last().scanning && f.heldLocks()==1,"short recovery browse remains active until its three second bound");
+        Handler.advance(1);
+        check(!f.last().scanning && hasHost(f.last(),"192.168.1.20"),"short recovery browse keeps valid discovered candidates at deadline");
+        check(f.heldLocks()==0 && f.nsd.stops.size()==1,"short browse releases multicast and NSD resources at deadline");
+        int events=f.events.size();
+        for(long invalid:new long[]{0,-1,TvDiscovery.SCAN_TIMEOUT_MS+1}) {
+            try {f.discovery.start((devices,scanning,message)->{},invalid);throw new AssertionError("invalid bound accepted");}
+            catch(IllegalArgumentException expected) {check(f.events.size()==events,"invalid short browse bound cannot start networking");}
+        }
     }
 
     private static void serviceTypeAndSerialResolution() throws Exception {

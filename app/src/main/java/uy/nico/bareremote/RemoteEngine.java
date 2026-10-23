@@ -12,6 +12,8 @@ import java.net.SocketTimeoutException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.ArrayDeque;
 import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
@@ -69,6 +71,10 @@ final class RemoteEngine {
     private volatile TvProtocol.Remote remote;
     private volatile AddressReconnect addressReconnect;
     private Runnable pairingExpiry;
+    private DiscoveryRecovery discoveryRecovery; // Guarded by connectionLock.
+    private static final int OPEN_CONNECTION_MS = 10_000;
+    private static final int QUICK_SCAN_MS = 3_000;
+    private static final int MAX_RECOVERY_CANDIDATES = 4;
 
     private RemoteEngine(Context context) {
         this.context = context;
@@ -135,12 +141,12 @@ final class RemoteEngine {
             closeRemote();
         }
         state("Connecting…", token);
-        final Operation operation = new Operation(token, completion);
+        final Operation operation = new Operation(token, completion, completion != null, null, OPEN_CONNECTION_MS);
         startTimeout(operation);
         execute(() -> {
             try {
                 if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
-                TvProtocol.Remote connection = connect(token);
+                TvProtocol.Remote connection = connect(operation, 0);
                 if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
                 if (!connection.isOpen()) throw new IOException("TV disconnected");
                 state("Connected", token);
@@ -313,20 +319,21 @@ final class RemoteEngine {
         }
         if (!isPaired()) { state(readyStatus()); return; }
         int token = generation.get();
+        final Operation operation = new Operation(token, null, false, null, OPEN_CONNECTION_MS);
+        startTimeout(operation);
         execute(() -> {
-            if (!current(token) || !foreground || pairingBusy || isReconnectingTo()) return;
-            state("Connecting…", token);
             try {
-                TvProtocol.Remote connected = connect(token);
-                synchronized (connectionLock) {
-                    if (!current(token) || !connectionWanted()) { discard(connected); return; }
-                }
+                if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
+                state("Connecting…", token);
+                TvProtocol.Remote connected = connect(operation, 0);
+                if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
                 state("Connected", token);
+                complete(operation, null, false);
                 pictureRequest(false, null, false, true);
             } catch (Exception failure) {
-                if (current(token) && foreground) error(message(failure), token);
+                complete(operation, message(failure));
             }
-        }, null);
+        }, () -> complete(operation, "Remote is busy. Try again."));
     }
 
     void pause() {
@@ -513,13 +520,13 @@ final class RemoteEngine {
                 finishPicture(request, null, "Could not confirm TV picture mode. Tap Sync before trying again.");
             }
         };
-        main.postDelayed(request.operation.timeout, 7000);
+        main.postDelayed(request.operation.timeout, Math.max(0, request.operation.deadline - SystemClock.elapsedRealtime()));
         execute(() -> {
             TvProtocol.Remote connection = null;
             boolean attempted = false;
             try {
                 if (!canRun(request.operation)) { finishPicture(request, null, "Control cancelled"); return; }
-                connection = connect(request.operation.token);
+                connection = connect(request.operation, TvProtocol.DELIVERY_WINDOW_MS);
                 synchronized (connectionLock) {
                     if (!canRun(request.operation)) { finishPicture(request, null, "Control cancelled"); return; }
                     long remaining = request.operation.deadline - SystemClock.elapsedRealtime();
@@ -571,6 +578,7 @@ final class RemoteEngine {
         Operation operation = request.operation;
         synchronized (connectionLock) {
             if (!operation.completed.compareAndSet(false, true)) return;
+            cancelRecovery(operation);
             if (request.client != null) request.client.close();
             pictureRequests.remove(request);
         }
@@ -587,6 +595,8 @@ final class RemoteEngine {
     }
 
     private void cancelInactivePictureRequests() {
+        if (discoveryRecovery != null && !operationActive(discoveryRecovery.operation))
+            discoveryRecovery.close();
         for (PictureOperation request : new HashSet<>(pictureRequests)) {
             Operation operation = request.operation;
             boolean active = operation.widgetToken != -1 ? widgetSessionActive : foreground;
@@ -644,7 +654,7 @@ final class RemoteEngine {
             boolean writeAttempted = false;
             try {
                 if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
-                if (held == null) connection = connect(operation.token);
+                if (held == null) connection = connect(operation, TvProtocol.DELIVERY_WINDOW_MS + (longPress ? 650 : 0));
                 else {
                     // A held button continues a live session. A lost connection
                     // stops the gesture; it must never reconnect and replay repeats.
@@ -756,7 +766,7 @@ final class RemoteEngine {
         final int widgetToken;
         final int foregroundToken;
         final BooleanSupplier held;
-        final long deadline = SystemClock.elapsedRealtime() + 7000;
+        final long deadline;
         final AtomicBoolean completed = new AtomicBoolean();
         // Guarded by connectionLock. Non-null only while this operation writes.
         TvProtocol.Remote writing;
@@ -766,6 +776,10 @@ final class RemoteEngine {
             this(token, completion, widgetOwner, null);
         }
         Operation(int token, Completion completion, boolean widgetOwner, BooleanSupplier held) {
+            this(token, completion, widgetOwner, held, 7000);
+        }
+        Operation(int token, Completion completion, boolean widgetOwner, BooleanSupplier held, int timeoutMs) {
+            this.deadline = SystemClock.elapsedRealtime() + timeoutMs;
             this.token = token;
             this.completion = completion;
             this.widgetToken = widgetOwner ? widgetGeneration.get() : -1;
@@ -778,6 +792,7 @@ final class RemoteEngine {
         operation.timeout = () -> {
             synchronized (connectionLock) {
                 if (!operation.completed.compareAndSet(false, true)) return;
+                cancelRecovery(operation);
                 // The sole network worker cannot start another write until this
                 // one returns. Even cancelled writes must release that worker.
                 if (operation.writing != null) {
@@ -803,6 +818,7 @@ final class RemoteEngine {
 
     private void complete(Operation operation, String error, boolean sentState) {
         if (!operation.completed.compareAndSet(false, true)) return;
+        synchronized (connectionLock) { cancelRecovery(operation); }
         main.removeCallbacks(operation.timeout);
         finish(operation.completion, error, operation.token, operation.widgetToken, operation.foregroundToken, sentState);
     }
@@ -815,29 +831,150 @@ final class RemoteEngine {
 
     private boolean connectionWanted() { return foreground || widgetSessionActive; }
 
-    private TvProtocol.Remote connect(int token) throws Exception {
+    private boolean operationActive(Operation operation) {
+        return !operation.completed.get() && current(operation)
+                && (operation.widgetToken == -1 ? foreground : widgetSessionActive)
+                && !pairingBusy && !isReconnectingTo()
+                && SystemClock.elapsedRealtime() < operation.deadline;
+    }
+
+    private TvProtocol.Remote connect(Operation operation, int deliveryReserve) throws Exception {
         final String address;
         final byte[] certificate;
         synchronized (connectionLock) {
-            if (!current(token) || !connectionWanted() || pairingBusy || isReconnectingTo())
-                throw new IOException("Control cancelled");
+            if (!canRun(operation)) throw new IOException("Control cancelled");
             if (!isPaired()) throw new IOException(pairingRequiredMessage());
             TvProtocol.Remote existing = remote;
             if (existing != null && existing.isOpen()) return existing;
             closeRemote();
             address = host;
-            certificate = pin;
+            certificate = pin.clone();
         }
-        TvProtocol.Remote connected = TvProtocol.Remote.connect(address, 6466, certificate, identity);
-        synchronized (connectionLock) {
-            if (!current(token) || !connectionWanted() || pairingBusy || isReconnectingTo()) {
-                connected.close();
-                throw new IOException("Control cancelled");
+        Exception original;
+        try {
+            TvProtocol.Remote connected = connectCandidate(operation, address, certificate, 3000, deliveryReserve);
+            synchronized (connectionLock) {
+                if (!canRun(operation)) { connected.close(); throw new IOException("Control cancelled"); }
+                remote = connected;
+                observeKeyboard(connected, operation.token);
+                return connected;
             }
-            remote = connected;
-            observeKeyboard(connected, token);
-            return connected;
+        } catch (Exception failure) {
+            original = failure;
         }
+        final DiscoveryRecovery recovery;
+        synchronized (connectionLock) {
+            if (!canRun(operation)) throw new IOException("Control cancelled");
+            recovery = new DiscoveryRecovery(operation, address);
+            discoveryRecovery = recovery;
+        }
+        state("Looking for your TV…", operation.token);
+        recovery.start();
+        try {
+            int checked = 0;
+            while (checked < MAX_RECOVERY_CANDIDATES) {
+                if (!canRun(operation)) throw new IOException("Control cancelled");
+                String candidate = recovery.next();
+                if (candidate == null) break;
+                checked++;
+                TvProtocol.Remote connected = null;
+                try {
+                    connected = connectCandidate(operation, candidate, certificate, 2000, deliveryReserve);
+                    synchronized (connectionLock) {
+                        if (!canRun(operation) || !connected.isOpen()) throw new IOException("Control cancelled");
+                        // A discovered label is never trust. Only pinned ready mutual TLS
+                        // may replace the address, while this exact initiating owner lives.
+                        if (!saveAddress(candidate)) throw new AddressSaveException();
+                        host = candidate;
+                        remote = connected;
+                        observeKeyboard(connected, operation.token);
+                    }
+                    final String accepted = candidate;
+                    main.post(() -> {
+                        if (current(operation.token) && accepted.equals(host)) publishPictureState("unknown");
+                    });
+                    return connected;
+                } catch (Exception failedCandidate) {
+                    if (connected != null) connected.close();
+                    if (failedCandidate instanceof AddressSaveException) throw failedCandidate;
+                    if (!canRun(operation)) throw new IOException("Control cancelled");
+                }
+            }
+            throw original;
+        } finally {
+            synchronized (connectionLock) { recovery.close(); }
+        }
+    }
+
+    private static final class AddressSaveException extends IOException {
+        private static final long serialVersionUID = 1L;
+        AddressSaveException() { super("Could not save the TV address. Tap Sync to retry."); }
+    }
+
+    private TvProtocol.Remote connectCandidate(Operation operation, String address, byte[] certificate,
+            int maximumMs, int deliveryReserve) throws Exception {
+        long remaining = operation.deadline - SystemClock.elapsedRealtime() - deliveryReserve;
+        if (remaining < 300) throw new SocketTimeoutException("Connection expired before sending");
+        return TvProtocol.Remote.connect(address, 6466, certificate, identity,
+                (int) Math.min(maximumMs, remaining), () -> !operationActive(operation));
+    }
+
+    /** One quick DNS-SD browse per failed explicit connection, never an idle retry. */
+    private final class DiscoveryRecovery {
+        final Operation operation;
+        final Object signal = new Object();
+        final ArrayDeque<String> candidates = new ArrayDeque<>();
+        final Set<String> seen = new LinkedHashSet<>();
+        TvDiscovery discovery; // Created, started and closed only on the main handler.
+        boolean scanning = true, closed;
+        DiscoveryRecovery(Operation operation, String oldAddress) {
+            this.operation = operation;
+            seen.add(oldAddress);
+        }
+        void start() {
+            main.post(() -> {
+                synchronized (signal) {
+                    if (closed || !operationActive(operation)) { scanning = false; signal.notifyAll(); return; }
+                    discovery = new TvDiscovery(context);
+                    discovery.start((devices, active, message) -> {
+                        synchronized (signal) {
+                            if (closed) return;
+                            for (TvDiscovery.Device device : devices) {
+                                if (seen.add(device.host) && seen.size() <= TvDiscovery.MAX_RESULTS + 1)
+                                    candidates.add(device.host);
+                            }
+                            scanning = active;
+                            signal.notifyAll();
+                        }
+                    }, QUICK_SCAN_MS);
+                }
+            });
+        }
+        String next() throws Exception {
+            synchronized (signal) {
+                while (!closed && candidates.isEmpty() && scanning && operationActive(operation)) {
+                    long remaining = operation.deadline - SystemClock.elapsedRealtime();
+                    if (remaining <= 0) break;
+                    signal.wait(remaining);
+                }
+                return closed ? null : candidates.poll();
+            }
+        }
+        void close() {
+            synchronized (signal) {
+                if (closed) return;
+                closed = true;
+                scanning = false;
+                candidates.clear();
+                signal.notifyAll();
+            }
+            if (discoveryRecovery == this) discoveryRecovery = null;
+            main.post(() -> { if (discovery != null) discovery.close(); });
+        }
+    }
+
+    private void cancelRecovery(Operation operation) {
+        if (discoveryRecovery != null && discoveryRecovery.operation == operation) discoveryRecovery.close();
     }
 
     /** Discard only this exact session; an old callback cannot close its replacement. */
@@ -853,6 +990,7 @@ final class RemoteEngine {
     }
     private void closeRemote() {
         synchronized (connectionLock) {
+            if (discoveryRecovery != null) discoveryRecovery.close();
             TvProtocol.Remote old = remote;
             remote = null;
             if (old != null) { old.setKeyboardListener(null); old.close(); }
@@ -944,7 +1082,8 @@ final class RemoteEngine {
         return canonical.toString();
     }
     private static String message(Exception failure) {
-        if (failure instanceof UnsupportedOperationException) return failure.getMessage();
+        if (failure instanceof UnsupportedOperationException || failure instanceof AddressSaveException)
+            return failure.getMessage();
         if (failure instanceof SocketTimeoutException) return "TV timed out. Check that both devices are on the same Wi-Fi.";
         String detail = failure.getMessage();
         if (detail != null && (detail.contains("code") || detail.contains("Code")

@@ -194,7 +194,10 @@ final class UpdateHTTPTransfer: NSObject, URLSessionDataDelegate, @unchecked Sen
         data.append(bytes)
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if error != nil { finish(.failure(MacUpdateError.network)) }
+        if let failure = error as? URLError, failure.code == .timedOut || failure.code == .cancelled {
+            finish(.failure(MacUpdateError.stopped))
+        }
+        else if error != nil { finish(.failure(MacUpdateError.network)) }
         else if let expectedSize, expectedSize != data.count { finish(.failure(MacUpdateError.wrongSize)) }
         else { finish(.success(data)) }
     }

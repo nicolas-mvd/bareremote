@@ -8,8 +8,8 @@ struct DiscoveredTV: Identifiable, Equatable, Sendable {
     let host: String
 }
 
-/// Explicit foreground-only Bonjour discovery. Names are untrusted display
-/// labels; choosing a result never creates or replaces certificate trust.
+/// Bounded, user-triggered Bonjour discovery for Setup and connection recovery.
+/// Names are untrusted labels and never create or replace certificate trust.
 @MainActor
 final class TVDiscovery: NSObject, ObservableObject, NetServiceBrowserDelegate, NetServiceDelegate {
     @Published private(set) var results: [DiscoveredTV] = []
@@ -21,20 +21,25 @@ final class TVDiscovery: NSObject, ObservableObject, NetServiceBrowserDelegate, 
     private var candidates: [ObjectIdentifier: NetService] = [:]
     private var resolvedHosts: [ObjectIdentifier: String] = [:]
     private var resolving: NetService?
+    private var found: ((DiscoveredTV) -> Void)?
+    private var finished: (() -> Void)?
     private let maximumCandidates = 64
     private let maximumResults = 32
 
-    func start() {
+    func start(duration: TimeInterval = 12, found: ((DiscoveredTV) -> Void)? = nil,
+               finished: (() -> Void)? = nil) {
         stop()
         results = []
         isScanning = true
+        self.found = found
+        self.finished = finished
         let browser = NetServiceBrowser()
         self.browser = browser
         browser.delegate = self
         browser.searchForServices(ofType: "_androidtvremote2._tcp.", inDomain: "local.")
         let deadline = DispatchWorkItem { [weak self] in self?.stop() }
         self.deadline = deadline
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12, execute: deadline)
+        DispatchQueue.main.asyncAfter(deadline: .now() + min(12, max(0, duration)), execute: deadline)
     }
 
     func stop() {
@@ -52,6 +57,10 @@ final class TVDiscovery: NSObject, ObservableObject, NetServiceBrowserDelegate, 
         resolvedHosts.removeAll()
         queued.removeAll()
         resolving = nil
+        found = nil
+        let completion = finished
+        finished = nil
+        completion?()
     }
 
     nonisolated func netServiceBrowser(_ browser: NetServiceBrowser, didFind service: NetService, moreComing: Bool) {
@@ -112,8 +121,10 @@ final class TVDiscovery: NSObject, ObservableObject, NetServiceBrowserDelegate, 
             if !results.contains(where: { $0.host == host }), results.count < maximumResults {
                 let name = sender.name.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) }
                 let displayName = String(String.UnicodeScalarView(name)).trimmingCharacters(in: .whitespacesAndNewlines)
-                results.append(DiscoveredTV(name: displayName.isEmpty ? host : displayName, host: host))
+                let tv = DiscoveredTV(name: displayName.isEmpty ? host : displayName, host: host)
+                results.append(tv)
                 results.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                found?(tv)
             }
         }
         finishResolution(sender)

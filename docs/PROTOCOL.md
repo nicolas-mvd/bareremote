@@ -47,7 +47,7 @@ The scan holds a temporary Wi-Fi multicast lock for compatibility with older
 Android versions. Stop, timeout, dialog dismissal and activity pause release it
 and stop browsing. Generation checks suppress late callbacks, including older
 Android resolver operations that cannot be directly cancelled. There is no
-subnet port sweep, service, polling, or automatic discovery on launch or Sync.
+subnet port sweep, service, or polling.
 TVs must advertise their remote service on the same multicast-capable network;
 manual IPv4 entry remains available.
 
@@ -87,7 +87,32 @@ The activity and widget service share the engine's saved TV connection. The firs
 
 On Android 13+, the activity requests `POST_NOTIFICATIONS` once after pairing or opening an already paired app. Denial does not disable widget commands or the foreground service. Android still exposes the running service in its Active apps/Task Manager view even when its notification is absent from the drawer.
 
-**Sync** in the app or widget explicitly replaces the current connection using the saved IP address, phone Keystore identity, and pinned TV certificate. It does not send a TV key, request a pairing code, or discover another address. The engine invalidates queued work from the old session; an old completion cannot close its replacement. Requests have individual seven-second deadlines, and only an operation actively writing may have its connection closed by that operation's watchdog. The protocol itself does not silently resend failed commands.
+**Sync** in the app or widget explicitly replaces the current connection using the saved address, installation identity, and pinned TV certificate. From Android 0.6.3 / macOS 0.3.2, a failed connection triggers one short DNS-SD recovery scan before reporting failure. It does not send a TV key or request a pairing code. The engine invalidates queued work from the old session; an old completion cannot close its replacement. Requests have individual seven-second deadlines, and only an operation actively writing may have its connection closed by that operation's watchdog. The protocol itself does not silently resend failed commands.
+
+## Automatic address recovery
+
+Recovery belongs to a user-requested connection: opening the remote, Sync, or a
+new app/widget session. It begins only after the saved address fails. Discovery
+uses the same native `_androidtvremote2._tcp.` browser as Setup, with a shorter
+window and bounded candidate verification. It does not scan IP ranges.
+The saved address gets up to three seconds, discovery runs for up to three
+seconds, and at most four distinct candidates get up to two seconds each within
+the remaining attempt budget. Open/Sync is bounded to ten seconds; control
+requests retain their original seven-second deadline, including delivery time.
+
+Discovered names never establish identity. Each candidate must complete the
+normal mutual-TLS, exact saved-certificate check and remote-ready handshake
+using this installation’s existing identity. Only then may its IPv4 address be
+saved and the verified connection used for controls. Failed candidates,
+cancellation, stale generations or failed persistence preserve saved trust and
+address. No fallback creates a pairing request or accepts a replacement pin.
+
+A scan ends on success, timeout or lifecycle cancellation. Existing command and
+shortcut expiry remains in effect; recovery does not extend it. A discrete
+action may be sent once after recovery only if no write was attempted and its
+original deadline and owner are still valid. Held repeats and keyboard commits
+never migrate to a recovered connection, and an uncertain key or picture toggle
+is never replayed. Idle widgets and disconnected apps do not poll or rescan.
 
 ## Picture requests in 0.2.0
 

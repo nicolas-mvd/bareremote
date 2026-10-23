@@ -18,6 +18,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 import javax.net.ssl.SSLContext;
@@ -217,15 +218,26 @@ public final class TvProtocol {
         /** Connects only to a previously paired server and waits until it can receive keys. */
         public static Remote connect(String host, int port, byte[] pinnedCertificate, Identity identity)
                 throws Exception {
+            return connect(host, port, pinnedCertificate, identity, REMOTE_CONNECT_TIMEOUT_MS, () -> false);
+        }
+
+        /** One bounded authenticated attempt; cancellation closes only its pending transport. */
+        static Remote connect(String host, int port, byte[] pinnedCertificate, Identity identity,
+                int timeoutMs, BooleanSupplier cancelled) throws Exception {
             if (pinnedCertificate == null || pinnedCertificate.length == 0) {
                 throw new IllegalArgumentException("Pair with the TV first");
             }
-            long deadline = deadline(REMOTE_CONNECT_TIMEOUT_MS);
-            Connection connection = connectSocket(host, port, pinnedCertificate, identity, deadline);
+            if (timeoutMs <= 0 || timeoutMs > REMOTE_CONNECT_TIMEOUT_MS || cancelled == null)
+                throw new IllegalArgumentException("Invalid connection budget");
+            long deadline = deadline(timeoutMs);
+            checkConnectionCancelled(cancelled);
+            Connection connection = connectSocket(host, port, pinnedCertificate, identity, deadline, cancelled);
             SSLSocket socket = connection.socket;
+            ConnectionWatch finished = watchConnection(connection.transport, cancelled);
             try {
                 final Remote remote = new Remote(connection);
                 for (int frames = 0; ; frames++) {
+                    checkConnectionCancelled(cancelled);
                     if (frames >= 64) throw new IOException("Too many TV handshake messages");
                     if (remote.handle(Proto.parse(readFrame(socket, remote.in, deadline)))) break;
                 }
@@ -243,10 +255,13 @@ public final class TvProtocol {
                 reader.setDaemon(true);
                 reader.start();
                 remote.awaitInputReady(deadline);
+                checkConnectionCancelled(cancelled);
                 return remote;
             } catch (Exception failure) {
                 connection.close();
                 throw failure;
+            } finally {
+                finished.finish();
             }
         }
 
@@ -377,7 +392,7 @@ public final class TvProtocol {
                 keyboard.supported((features & 4) != 0);
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.6.2");
+                        .text(5, "uy.nico.bareremote").text(6, "0.6.3");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;
@@ -458,8 +473,12 @@ public final class TvProtocol {
     }
 
     private static Connection connectSocket(String host, int port, byte[] pin, Identity identity,
-            long deadline)
-            throws Exception {
+            long deadline) throws Exception {
+        return connectSocket(host, port, pin, identity, deadline, () -> false);
+    }
+
+    private static Connection connectSocket(String host, int port, byte[] pin, Identity identity,
+            long deadline, BooleanSupplier cancelled) throws Exception {
         if (host == null || host.length() == 0 || host.length() > 253 || port < 1 || port > 65535) {
             throw new IllegalArgumentException("Invalid TV address");
         }
@@ -470,7 +489,9 @@ public final class TvProtocol {
         SSLContext context = identity.context(expected);
         Socket transport = new Socket();
         Connection connection = null;
+        ConnectionWatch finished = watchConnection(transport, cancelled);
         try {
+            checkConnectionCancelled(cancelled);
             // Closing a plain socket with linger disabled aborts blocked I/O without a TLS write.
             transport.setSoLinger(false, 0);
             transport.setTcpNoDelay(true);
@@ -482,6 +503,7 @@ public final class TvProtocol {
             socket.setEnabledProtocols(new String[] {"TLSv1.2"});
             socket.setSoTimeout(remaining(deadline));
             socket.startHandshake();
+            checkConnectionCancelled(cancelled);
             // Defense in depth: verify the pin even if an Identity implementation is too permissive.
             if (expected != null && !MessageDigest.isEqual(expected,
                     socket.getSession().getPeerCertificates()[0].getEncoded())) {
@@ -492,7 +514,44 @@ public final class TvProtocol {
             if (connection != null) connection.close();
             else closeTransport(transport);
             throw failure;
+        } finally {
+            finished.finish();
         }
+    }
+
+    private static ConnectionWatch watchConnection(Socket transport, BooleanSupplier cancelled) {
+        ConnectionWatch watch = new ConnectionWatch(transport, cancelled);
+        Thread cancellation = new Thread(watch, "BareRemote-connect-cancel");
+        cancellation.setDaemon(true);
+        cancellation.start();
+        return watch;
+    }
+
+    /** The synchronized gate makes ready/adoption a firm cancellation boundary. */
+    private static final class ConnectionWatch implements Runnable {
+        final Socket transport;
+        final BooleanSupplier cancelled;
+        final CountDownLatch finished = new CountDownLatch(1);
+        ConnectionWatch(Socket transport, BooleanSupplier cancelled) {
+            this.transport = transport;
+            this.cancelled = cancelled;
+        }
+        synchronized void finish() { finished.countDown(); }
+        @Override public void run() {
+            try {
+                while (!finished.await(25, TimeUnit.MILLISECONDS)) {
+                    synchronized (this) {
+                        if (finished.getCount() == 0) return;
+                        if (cancelled.getAsBoolean()) { closeTransport(transport); return; }
+                    }
+                }
+            } catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); }
+        }
+    }
+
+    private static void checkConnectionCancelled(BooleanSupplier cancelled) throws IOException {
+        if (cancelled.getAsBoolean() || Thread.currentThread().isInterrupted())
+            throw new IOException("Control cancelled");
     }
 
     private static final class Connection implements Closeable {

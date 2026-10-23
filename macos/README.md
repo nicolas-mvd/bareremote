@@ -79,6 +79,14 @@ Allow local network access when macOS requests it. Discovery searches Bonjour
 for `_androidtvremote2._tcp.` for at most 12 seconds and lists IPv4 results on
 port 6466. Browsing and selecting a result never pair or send a control.
 Manual address entry remains available if multicast discovery is blocked.
+
+From 0.3.2, opening the remote or pressing **Sync** first tries the saved TV
+address. If it cannot connect, BareRemote briefly scans Bonjour and checks the
+discovered addresses using the existing certificate pin and Mac identity. It
+connects to the same paired TV and saves its new address automatically after a
+successful check. Discovery runs once for that connection attempt and stops on
+success, timeout or cancellation; it never runs while idle or requests a new
+pairing code. Expired shortcuts and uncertain commands are not replayed.
 The TV must support Android TV Remote Service v2; no ADB or developer mode is
 needed. Pair this Mac separately from every phone.
 
@@ -318,3 +326,20 @@ search field. Guarded cleanup restored the original empty query, verified both
 on the TV and through authenticated IME cursor/length metadata. Only arm64 was
 executed. The TV’s changed address was recovered through normal discovery and
 pinned reconnect; it did not require a new Mac pairing.
+
+Version **0.3.2** adds the same automatic address recovery as Android 0.6.3.
+Its **90 tests** pass across 82 normal tests and eight actual Keychain mutual-TLS
+loopback tests, including 12 focused recovery cases. These cover changed
+addresses, wrong pins, no match, cancellation, late sessions, candidate limits
+and deadlines. The app also reports updater resource timeouts consistently
+when URLSession’s deadline races the cancellation timer. The release is a signed
+universal binary; only arm64 was executed. No physical TV address was changed
+for validation.
+
+The exact signed 0.3.2/build 13 also passed a physical CSV4K recovery check on
+2026-10-23. Only the Mac’s saved address was temporarily set to the TV’s obsolete
+address; its certificate pin and Keychain identity stayed intact. Opening the
+installed app normally found the TV at its current address, reconnected and
+saved the working address without a manual scan or pairing code. The original
+certificate, name and owner-only file permissions were retained, and the app
+showed Connected. No TV network settings were changed.
