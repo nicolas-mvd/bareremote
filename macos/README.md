@@ -302,6 +302,10 @@ strict signature verification passed. See the [live update validation](../docs/M
 Version **0.3.1** fixes the same directional IME protocol mistake as Android
 0.6.2: TV keyboard visibility was mistaken for input counters, and insertion
 coordinates were based on the typed string rather than the actual TV cursor.
-The corrected suite passes 76 tests across normal, native AppKit and actual
+The corrected suite passes 78 tests across normal, native AppKit and actual
 loopback TLS tests. The fixtures now follow Remote Service 7.00.999235495’s
 actual server/client message directions; see the [protocol notes](../docs/PROTOCOL.md#native-keyboard-input).
+
+Keyboard visibility can hide and reopen the same editor without defeating the
+user’s manual Remote choice. That choice stays attached to the editor across
+cursor and content updates. Vertical arrows stay local to the native commit pad.

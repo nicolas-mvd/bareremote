@@ -18,9 +18,11 @@ public struct TVKeyboardState: Equatable, Sendable {
     public let active: Bool
     public let canSendText: Bool
     public let focusID: UInt64
+    /// Stable for the editor across content revisions and cursor changes.
+    public let editorID: UInt64?
     /// The server's explicit input-window visibility, unknown until envelope 21.
     public let keyboardVisible: Bool?
-    /// Advances only on the first explicit show for a focused editor.
+    /// Advances once for a new editor or a hidden-to-visible keyboard cycle.
     public let showRequestID: UInt64
     public let context: TVKeyboardContext?
     public let fieldLabel: String
@@ -41,6 +43,7 @@ struct TVKeyboardTracker {
     private var appPackage: String?
     private var field: Field?
     private var focusID: UInt64 = 0
+    private var editorID: UInt64 = 0
     private var showRequestID: UInt64 = 0
     private var shownForFocus = false
     private var keyboardVisible: Bool?
@@ -65,6 +68,7 @@ struct TVKeyboardTracker {
         } else { context = nil }
         return TVKeyboardState(supported: supported, active: supported && appCounter != nil,
                                canSendText: context != nil, focusID: focusID,
+                               editorID: appCounter == nil ? nil : editorID,
                                keyboardVisible: keyboardVisible,
                                showRequestID: shownForFocus ? showRequestID : 0, context: context,
                                fieldLabel: field?.label ?? "", selectionStart: field?.start,
@@ -117,6 +121,7 @@ struct TVKeyboardTracker {
             guard raw <= 1 else { throw TVProtocolError.malformed("Invalid TV keyboard visibility.") }
             _ = try nonnegativeInt32(visibility, 2) // InputMethodManager flags.
             keyboardVisible = raw == 1
+            if raw == 0 { shownForFocus = false }
             requestShowIfVisible()
         }
         if message.has(22) {
@@ -248,6 +253,7 @@ struct TVKeyboardTracker {
 
     private mutating func clearFocus() {
         focusID &+= 1
+        editorID &+= 1
         appCounter = nil
         appPackage = nil
         field = nil

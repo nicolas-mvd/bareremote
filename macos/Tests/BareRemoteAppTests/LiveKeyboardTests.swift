@@ -98,7 +98,7 @@ import XCTest
         view.keyboardKey = { commands.append($0) }
         view.remoteMode = { remotes += 1 }
         view.commit = { _ in commits += 1; return true }
-        for code: UInt16 in [51, 36, 123, 124, 53] {
+        for code: UInt16 in [51, 36, 123, 124, 125, 126, 53] {
             let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero,
                 modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil,
                 characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))

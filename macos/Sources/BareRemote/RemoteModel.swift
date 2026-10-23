@@ -86,7 +86,7 @@ final class OperationGate: @unchecked Sendable {
     func showRemoteMode() {
         stopHolding()
         invalidateKeyboardInput()
-        keyboardRemoteOverride = keyboardState?.focusID
+        keyboardRemoteOverride = keyboardState?.editorID
         keyboardMode = false
         keyboardNotice = ""
     }
@@ -94,7 +94,7 @@ final class OperationGate: @unchecked Sendable {
         keyboardWindowRequested?()
         showKeyboardMode()
     }
-    private func receiveKeyboard(_ state: TVKeyboardState, revision: Int) {
+    func receiveKeyboard(_ state: TVKeyboardState, revision: Int) {
         guard generation == revision else { return }
         let previous = keyboardState
         keyboardState = state
@@ -112,7 +112,7 @@ final class OperationGate: @unchecked Sendable {
         }
         if state.showRequestID > keyboardShowRequest {
             keyboardShowRequest = state.showRequestID
-            if state.active, state.keyboardVisible == true, keyboardRemoteOverride != state.focusID {
+            if state.active, state.keyboardVisible == true, keyboardRemoteOverride != state.editorID {
                 stopHolding()
                 keyboardMode = true
             }

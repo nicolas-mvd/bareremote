@@ -157,7 +157,7 @@ struct TVTextInput: NSViewRepresentable {
         override func keyDown(with event: NSEvent) {
             if event.keyCode == 53 { let back = remoteMode; deactivateInput(); back(); return }
             if !hasMarkedText(), event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
-                let keys: [UInt16: Int] = [36: 66, 76: 66, 51: 67, 117: 112, 123: 21, 124: 22, 125: 20, 126: 19, 48: 61]
+                let keys: [UInt16: Int] = [36: 66, 76: 66, 51: 67, 117: 112, 123: 21, 124: 22, 48: 61]
                 if let code = keys[event.keyCode] { if isEditable && acceptingInput { keyboardKey(code) }; return }
             }
             super.keyDown(with: event)

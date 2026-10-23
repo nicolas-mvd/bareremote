@@ -37,18 +37,41 @@ final class TVKeyboardTests: XCTestCase {
         }
     }
 
-    func testHidePreservesManualInputAndRepeatedShowRespectsRemoteChoice() throws {
+    func testNewVisibilityCycleRequestsKeyboardAgainButDuplicateShowDoesNot() throws {
         var tracker = configured()
         try tracker.receive(editor(id: 7, revision: 9))
         try tracker.receive(visibility(true))
         let show = tracker.snapshot.showRequestID
+        try tracker.receive(visibility(true))
+        XCTAssertEqual(tracker.snapshot.showRequestID, show, "Duplicate visibility does not request another switch")
+        let editorID = tracker.snapshot.editorID
         try tracker.receive(visibility(false))
         XCTAssertEqual(tracker.snapshot.keyboardVisible, false)
         XCTAssertTrue(tracker.snapshot.canSendText, "Visibility and editor validity are separate")
         try tracker.receive(visibility(true))
-        XCTAssertEqual(tracker.snapshot.showRequestID, show)
+        XCTAssertGreaterThan(tracker.snapshot.showRequestID, show, "A hidden-to-visible cycle is a new show request")
+        XCTAssertEqual(tracker.snapshot.editorID, editorID)
+        let nextShow = tracker.snapshot.showRequestID
+        try tracker.receive(visibility(true))
+        XCTAssertEqual(tracker.snapshot.showRequestID, nextShow)
         try tracker.receive(editor(id: 8, revision: 12))
-        XCTAssertGreaterThan(tracker.snapshot.showRequestID, show)
+        XCTAssertGreaterThan(tracker.snapshot.showRequestID, nextShow)
+        XCTAssertNotEqual(tracker.snapshot.editorID, editorID)
+    }
+
+    func testEditorIdentityStaysStableAcrossExternalContentAndCursorChanges() throws {
+        var tracker = configured()
+        try tracker.receive(editor(id: 7, revision: 9, start: 10, end: 10))
+        let editorID = tracker.snapshot.editorID
+        let focus = tracker.snapshot.focusID
+        try tracker.receive(update(revision: 11, start: 12, end: 12, own: false))
+        XCTAssertGreaterThan(tracker.snapshot.focusID, focus)
+        XCTAssertEqual(tracker.snapshot.editorID, editorID)
+        try tracker.receive(Proto.parse(Data([0xba, 0x01, 0x04, 0x10, 0x0b, 0x18, 0x0d])))
+        XCTAssertEqual(tracker.snapshot.editorID, editorID)
+        try tracker.receive(visibility(false))
+        try tracker.receive(visibility(true))
+        XCTAssertEqual(tracker.snapshot.editorID, editorID)
     }
 
     func testAppOnlyNotificationClearsEditorAndCannotBeUsedAsCounterZeroFallback() throws {
