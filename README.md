@@ -303,3 +303,12 @@ cursor for Unicode insertion, handles visibility and content acknowledgments
 separately, and preserves stale-input cancellation. The corrected host suite
 passes 1,054 assertions and the actual Android app passes 63 native assertions
 against the independent loopback service.
+
+On 2026-10-23, the exact public 0.6.2/code 13 APK was checked against the
+physical CSV4K TV running Remote Service 7.00.999235495. The selected Android
+emulator used its own Android Keystore pairing. Both Stremio and SmartTube
+Beta triggered automatic native keyboard mode, and native commits reached each
+real TV field exactly once. SmartTube’s 14 native Delete actions restored its
+original empty query with authenticated cursor feedback. All known test words
+were confirmed absent afterward. These are emulator-to-physical-TV checks; no
+physical phone was connected.

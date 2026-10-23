@@ -309,3 +309,12 @@ actual server/client message directions; see the [protocol notes](../docs/PROTOC
 Keyboard visibility can hide and reopen the same editor without defeating the
 user’s manual Remote choice. That choice stays attached to the editor across
 cursor and content updates. Vertical arrows stay local to the native commit pad.
+
+The final public universal 0.3.1/build 12 was installed in
+`/Applications/BareRemote.app` and checked against the physical CSV4K TV on
+2026-10-23 using the existing Mac pairing. SmartTube Beta triggered automatic
+keyboard mode, and a native AppKit commit appeared exactly once in its actual
+search field. Guarded cleanup restored the original empty query, verified both
+on the TV and through authenticated IME cursor/length metadata. Only arm64 was
+executed. The TV’s changed address was recovered through normal discovery and
+pinned reconnect; it did not require a new Mac pairing.
