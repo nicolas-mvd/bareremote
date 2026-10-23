@@ -186,7 +186,7 @@ public final class RemoteWidget extends AppWidgetProvider {
         } else if ("custom".equals(state)) {
             description = "Custom picture levels last confirmed on TV. Tap to toggle TV mode.";
         } else {
-            description = "Day/Night state unknown. Sync to check or tap to toggle TV mode.";
+            description = "Day/Night state unknown. Tap to toggle TV mode.";
         }
         views.setImageViewResource(R.id.widget_mode, icon);
         views.setContentDescription(R.id.widget_mode, description);

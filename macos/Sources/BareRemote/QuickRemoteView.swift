@@ -104,8 +104,8 @@ struct QuickRemoteControls: View {
                         .frame(maxWidth: .infinity).frame(height: 34)
                 }
                 .disabled(model.busy)
-                .accessibilityLabel(model.saved == nil ? "Set up TV" : "Sync connection and picture mode")
-                .help(model.saved == nil ? "Pair with your television" : "Reconnect and refresh picture mode")
+                .accessibilityLabel(model.saved == nil ? "Set up TV" : "Sync connection")
+                .help(model.saved == nil ? "Pair with your television" : "Reconnect to the TV")
 
                 Rectangle().fill(QuickRemotePalette.ink.opacity(0.20)).frame(width: 1, height: 14)
 

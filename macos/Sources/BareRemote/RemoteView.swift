@@ -32,7 +32,7 @@ struct RemoteView: View {
                 HStack(spacing: 0) {
                     Button { model.sync() } label: {
                         Image(systemName: "arrow.triangle.2.circlepath").frame(width: 54, height: 40)
-                    }.help("Sync connection and picture mode (⌘R)").accessibilityLabel("Sync")
+                    }.help("Reconnect to the TV (⌘R)").accessibilityLabel("Sync connection")
                     Rectangle().fill(ink.opacity(0.15)).frame(width: 1, height: 16)
                     Button { model.refreshPicture(toggle: true) } label: {
                         Image(systemName: model.modeSymbol).frame(width: 54, height: 40)

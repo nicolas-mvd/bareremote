@@ -7,21 +7,21 @@ Build it with `./macos/build.sh` and open `build/macos/BareRemote.app`. It uses 
 own Keychain pairing identity and supports the same TV controls, local discovery,
 TV text entry, keyboard navigation, hold-to-repeat, and BareHome picture
 confirmation, plus a menu bar remote, movable desktop remote and manual
-**Check for Updates**. Version 0.4.0 (build 14) requires macOS 13+.
+**Check for Updates**. Version 0.4.1 (build 15) requires macOS 13+.
 The desktop prototype has separate validation and versioning from
 the Android releases below.
 
-**[Download macOS 0.4.0](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.0-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.0-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
+**[Download macOS 0.4.1](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.1-prototype/BareRemote-macOS.zip)** · [Mac release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.1-prototype). Apple Development-signed prototype; not notarized. See the [installation and signing notes](macos/README.md#build-and-open).
 
-**Prototype, version 0.7.0 (code 15).** Android 8+; targets Android 15. Ordinary remote controls do not require the separate [BareHome TV launcher](https://github.com/nicolas-mvd/barehome). Dog Mode requires BareHome 1.4 and its one-time TV setup. Compatibility checks are listed below; releases remain prereleases.
+**Prototype, version 0.7.1 (code 16).** Android 8+; targets Android 15. Ordinary remote controls do not require the separate [BareHome TV launcher](https://github.com/nicolas-mvd/barehome). Dog Mode requires BareHome 1.4 and its one-time TV setup. Compatibility checks are listed below; releases remain prereleases.
 
-**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.7.0-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.7.0-prototype)
+**[Download BareRemote.apk](https://github.com/nicolas-mvd/bareremote/releases/download/v0.7.1-prototype/BareRemote.apk)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/v0.7.1-prototype)
 
 [App preview](docs/screenshots/app.png) · [Full-page widget preview](docs/screenshots/widget.png). These show version 0.3.0 on the Android emulator, paired with a local simulated TV.
 
 ## Use it
 
-**Upgrading?** Install over the existing app. Updating from 0.4.1 or newer keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.0 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
+**Upgrading?** Install over the existing app. Updating from 0.4.1 or newer keeps your pairing and widgets. **Do not uninstall first.** Version 0.4.1 fixes multiple-phone pairing: when upgrading from 0.4.1 or earlier, open Setup and **pair each phone once more** using the TV code. Your saved TV address and widget remain in place. Later updates retain this new pairing.
 
 1. Open the APK download link above on each phone, download it, and open it. If Android asks, allow that browser or file manager to **install unknown apps**.
 2. Put the phone and TV on the same local network. Open BareRemote → **Setup** → **Scan for TVs**, select your TV, then tap **Pair**. You can also enter its IPv4 address from the TV’s network settings.
@@ -145,7 +145,7 @@ One mode icon shows the TV's **last confirmed** preset: **sun for Day**, **moon 
 
 This requires **[BareHome 1.2 or newer](https://github.com/nicolas-mvd/barehome/releases/tag/v1.3)** on the TV, its supported picture-control hardware, and its existing one-time picture permission. It uses your saved Backlight/Picture Brightness presets; edit those by holding the Day/Night button in the launcher.
 
-Opening the remote, tapping Sync, or changing mode requests a fresh TV snapshot. An idle widget keeps the last confirmed state. If the other phone or the TV remote changes the picture, tap Sync to refresh; there is no continuous monitoring.
+Opening the remote, Settings and Sync only connect to the paired TV; they do not launch a TV status Activity. The icon keeps its last confirmed snapshot and can become stale after another remote changes the preset. An explicit mode tap changes the preset and confirms the result. There is no continuous monitoring.
 
 The request uses the existing paired TV connection. The phone briefly listens for an authenticated local reply, and BareHome sends one reply before stopping. No permanent TV listener or service is added. A missing reply never triggers an automatic second toggle. Normal remote buttons work independently of picture-state support. See [how confirmation works and its limits](docs/PICTURE_STATE.md).
 
@@ -155,7 +155,7 @@ The hardware, permission, automatic-lighting and native Picture-mode guards rema
 
 Tap **Add widget** in the app and accept your launcher’s prompt. Alternatively, touch and hold an empty home-screen area → **Widgets** → **BareRemote**.
 
-The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The **BareRemote logo beside mute opens the full remote**, including hold-to-repeat controls. The gear also opens the app; Sync reconnects and checks picture state; its control buttons send commands directly. Pair once in the app first.
+The widget requests a 4 × 5 cell layout and resizes in both directions. Put it on an empty page, touch and hold it, and drag the resize handles to fill the page. Available sizes depend on your launcher. The **BareRemote logo beside mute opens the full remote**, including hold-to-repeat controls. The gear also opens the app; Sync only reconnects; its control buttons send commands directly. Pair once in the app first.
 
 The first tap opens a connection. Further taps reuse it for faster navigation, and each tap resets a **60-second idle timer**. A temporary Android foreground service keeps this session alive, with a notification containing **Stop**. It ends automatically after a minute without taps. The app can keep its own connection while open.
 
@@ -352,3 +352,21 @@ startup, intermediate/final replies, restoration, cancellation, diagnostics and
 no replay of uncertain commands. The shared TV path was physically checked
 through the Mac client; no physical Android phone was used. See the
 [Dog Mode validation and limits](docs/DOG_MODE.md#physical-validation--2026-10-23).
+
+
+Version **0.7.1** fixes NS NOW turning black when the Android remote reopens.
+Opening/reconnecting the remote, opening Settings and Sync now connect without
+launching a TV status Activity. The picture icon remains its last confirmed
+snapshot for the paired TV; Dog Mode is unknown until an explicit check. Explicit
+picture controls, Check status, Start, End and setup remain available. Those
+explicit app links can still briefly pause NS NOW because its player does not
+rebuild after a pause-only transition.
+
+All eight host suites pass **1,468 assertions**. An Android 15 emulator using its
+real Keystore identity also passes **40 native lifecycle assertions**: seven
+pinned sessions from repeated reopen/Settings/Sync sent zero app links to the
+independent loopback TV, and one explicit key was actually applied. These are
+emulator/loopback results; physical Android-to-NS NOW confirmation remains pending.
+Run this focused check with `python3 tests/android/run-passive-test.py --emulator
+emulator-SERIAL` after building the app and native test APK; use only a disposable
+selected emulator. It deliberately replaces that emulator's test pairing.

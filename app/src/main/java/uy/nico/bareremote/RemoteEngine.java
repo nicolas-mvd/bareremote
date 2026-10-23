@@ -158,7 +158,6 @@ final class RemoteEngine {
                 if (!connection.isOpen()) throw new IOException("TV disconnected");
                 state("Connected", token);
                 complete(operation, null, false);
-                pictureRequest(false, null, operation.widgetToken != -1, true);
             } catch (Exception failure) {
                 complete(operation, message(failure));
             }
@@ -336,7 +335,6 @@ final class RemoteEngine {
                 if (!canRun(operation)) { complete(operation, "Control cancelled"); return; }
                 state("Connected", token);
                 complete(operation, null, false);
-                pictureRequest(false, null, false, true);
             } catch (Exception failure) {
                 complete(operation, message(failure));
             }
@@ -504,6 +502,13 @@ final class RemoteEngine {
     String dogMode() { return dogMode; }
     boolean dogBusy() { return dogBusy; }
     String dogStatus() { return dogStatus; }
+    void settingsOpened() {
+        synchronized (connectionLock) {
+            if (dogBusy) return;
+            dogMode = "unknown";
+            dogNotice("Choose Check status to read Dog Mode from your TV.");
+        }
+    }
     void refreshDogMode() { dogRequest("state"); }
     void openDogSetup() { dogRequest("setup"); }
     void startDogMode() {

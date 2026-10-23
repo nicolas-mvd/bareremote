@@ -1,6 +1,6 @@
 # BareRemote for macOS
 
-A small native macOS remote for Android TV. Version **0.4.0 prototype (build 14)**, macOS
+A small native macOS remote for Android TV. Version **0.4.1 prototype (build 15)**, macOS
 **13 Ventura or newer**. SwiftUI/AppKit, Network, Security and CryptoKit; no
 third-party runtime dependencies, Java runtime, accounts, telemetry, polling,
 login item or background service. Includes a menu bar remote and a movable
@@ -28,7 +28,8 @@ running app and does not need to appear in macOS's Edit Widgets gallery.
 An idle desktop remote never opens a TV connection or polls. Its buttons start
 the existing paired session on demand, and the connection expires 60 seconds
 after the latest action when neither the full remote nor menu popover is open.
-Open those surfaces to see a fresh TV-confirmed picture snapshot. Closing the
+Opening those surfaces only connects to the paired TV. It does not launch a
+TV status Activity; the picture icon shows its last confirmation, if available. Closing the
 popup without sending a command releases its connection after a short delivery
 allowance. No login item is installed.
 
@@ -52,7 +53,7 @@ in Edit Widgets. It is excluded from the normal app bundle. Developers can opt
 in with `BAREREMOTE_INCLUDE_WIDGETKIT=1 ./macos/build.sh`; this requires macOS 14+
 for the extension and does not replace the built-in desktop remote.
 
-**[Download the 0.4.0 prototype](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.0-prototype/BareRemote-macOS.zip)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.0-prototype).
+**[Download the 0.4.1 prototype](https://github.com/nicolas-mvd/bareremote/releases/download/macos-v0.4.1-prototype/BareRemote-macOS.zip)** · [Release notes and checksum](https://github.com/nicolas-mvd/bareremote/releases/tag/macos-v0.4.1-prototype).
 
 The build uses the explicitly selected `BAREREMOTE_SIGN_IDENTITY`, or a locally
 saved selection in `.keys/macos-signing-identity`. Without either it uses an ad
@@ -111,8 +112,8 @@ address and exact certificate pin live in
 owner-only permissions. No identity, private key or paired TV is bundled.
 
 Opening a paired app reconnects using that identity and the exact saved TV
-certificate. **Sync (⌘R)** explicitly replaces a connection and refreshes picture
-state. If the TV's address changes, select it in Setup or enter its new address,
+certificate. **Sync (⌘R)** only replaces the connection; it sends no picture or
+Dog Mode app link. If the TV's address changes, select it in Setup or enter its new address,
 then choose **Reconnect**. The new address is saved only after authentication
 and remote readiness. Failure or cancellation preserves the previous pairing.
 A different or reset TV requires **Pair with a TV code**.
@@ -133,7 +134,8 @@ continues on the TV after you close BareRemote. This requires BareHome 1.4 on
 the supported CSV4K, its protected-settings access and explicit one-time consent
 for the NS NOW Accessibility helper. The helper acts only during Dog Mode and
 is disabled on exit. NS NOW requires USB debugging to be off. Use Check status
-or Restore settings & exit after an uncertain result. See [setup and recovery](../docs/DOG_MODE.md).
+or Restore settings & exit after an uncertain result. Opening Settings leaves
+Dog Mode unconfirmed until an explicit Check status or mode action. See [setup and recovery](../docs/DOG_MODE.md).
 
 ## Controls
 
@@ -167,8 +169,9 @@ particular HDMI socket. There are no global keyboard hooks.
 The green strip's mode icon is the TV's last authenticated picture snapshot:
 sun for Day, moon for Night, question mark for unknown/custom/unavailable. Tap
 to let the TV toggle its own saved preset. This requires BareHome 1.2+, its
-supported hardware and existing picture permission. Opening a connection and
-pressing Sync query a snapshot; an idle window does not poll.
+supported hardware and existing picture permission. A picture tap changes the
+preset and confirms the result. Opening a connection, Settings and Sync do not
+query TV state; an idle window does not poll.
 
 Picture confirmation uses the existing pinned connection and one temporary UDP
 reply socket, bounded to four seconds. The client validates the source IPv4
@@ -368,3 +371,13 @@ BareHome after End; authenticated state confirmed activation and exact energy
 restoration/helper removal. Only arm64 was executed. The three-hour prompt and
 long-duration playback remain physically untested. See the
 [Dog Mode validation record](../docs/DOG_MODE.md#physical-validation--2026-10-23).
+
+
+Version **0.4.1** makes connection, reopening, Settings and Sync passive: no TV
+status app link is launched automatically. It retains the last confirmed picture
+snapshot only for the exact saved host and certificate; Dog Mode stays unknown
+until explicitly checked. This avoids the NS NOW pause/resume player failure on
+passive connection. Explicit TV app links can still interrupt that app.
+**107 tests pass**: 99 normal tests including signed updater fixtures and eight
+actual Keychain mutual-TLS loopback tests. The universal signed build preserves
+the existing pairing; only arm64 was executed.

@@ -384,7 +384,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         String description = "day".equals(mode) ? "Day last confirmed on TV. Tap to toggle TV mode"
                 : "night".equals(mode) ? "Night last confirmed on TV. Tap to toggle TV mode"
                 : "custom".equals(mode) ? "TV levels differ from its saved preset. Tap to switch preset"
-                : "TV mode not confirmed. Sync to check, or tap to switch preset";
+                : "TV mode not confirmed. Tap to switch preset";
         pictureButton.setImageResource(icon);
         pictureButton.setContentDescription(description);
         pictureButton.setTooltipText(description);
@@ -543,7 +543,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         TextView pictureLabel = text("Day / Night and inputs", 15, WHITE);
         pictureLabel.setTypeface(null, Typeface.BOLD);
         controls.addView(pictureLabel);
-        addSettingsNote(controls, "The sun or moon shows the last TV-confirmed picture preset. A question mark means it is unconfirmed. Sync checks again. Requires BareHome picture controls. The PlayStation button opens the TV’s source menu.");
+        addSettingsNote(controls, "The sun or moon shows the last TV-confirmed picture preset. A question mark means it is unconfirmed. Tap the mode button to change and confirm the preset. Sync only reconnects. Requires BareHome picture controls. The PlayStation button opens the TV’s source menu.");
         Button widget = button("Add widget", "Add a remote widget to your home screen");
         widget.setOnClickListener(v -> { pendingSetup = false; dismissSetup(); addWidget(); });
         addSettingsAction(controls, widget);
@@ -594,8 +594,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
             setupConnectionActions.clear();
         });
         setupDialog.show();
+        engine.settingsOpened();
         refreshSetupDogMode();
-        if (engine.isPaired()) engine.refreshDogMode();
     }
 
     private LinearLayout settingsSection(LinearLayout body, String title) {

@@ -6,8 +6,8 @@ BareHome's state over that connection.
 
 ## What the icon means
 
-Opening the app, tapping Sync, or tapping the mode button requests a fresh TV
-snapshot. Sun means the TV confirmed its saved Day preset and matching picture
+The mode button changes the preset and requests a fresh TV snapshot. Sun means
+the TV last confirmed its saved Day preset and matching picture
 levels; moon means Night. A question mark means the state is unavailable,
 unconfirmed, or the current picture levels differ from the selected preset.
 The TV decides which preset to apply when toggling, so a stale phone icon does
@@ -15,8 +15,16 @@ not decide the next mode.
 
 The widget retains the last confirmed snapshot while idle. There is no ongoing
 polling or subscription. If another phone or the TV's own controls change the
-picture, tap Sync to refresh. Confirmed settings do not measure emitted light or
+picture, the cached icon can remain out of date until the next explicit picture
+action. Opening the remote, Settings and Sync only connect; they do not launch
+BareHome to query state. Confirmed settings do not measure emitted light or
 guarantee uninterrupted playback in every TV app.
+
+The app-link transport briefly launches a windowless TV Activity. NS NOW releases
+its player on pause without rebuilding it on a resume-only transition, so even a
+read-only snapshot can interrupt playback. No status Activity is launched merely
+to open or reconnect the remote. Explicit picture and Dog Mode actions still use
+their fixed app links.
 
 ## One request, one reply
 

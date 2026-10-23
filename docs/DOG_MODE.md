@@ -37,11 +37,17 @@ The helper must not act outside NS NOW or after Dog Mode ends.
 
 ## Settings and confirmation
 
-Opening Settings or pressing Check status requests a fresh snapshot. On macOS,
-Sync or Reconnect while Settings is open also requests one. On Android, Reconnect
-clears the previous confirmation; choose Check status afterward. A status request reads the journal and current settings
+Opening the remote, Settings or pressing Sync only connects; none sends a TV
+app link. Settings presents Dog Mode as unknown until an explicit **Check status**
+request. That request reads the journal and current settings
 without launching NS NOW, altering energy settings or returning Home. There is no
 extra Dog Mode request for ordinary remote connections or key presses.
+
+State requests use a windowless TV Activity and can interrupt apps that release
+their player on pause. BareRemote therefore never queries Dog Mode automatically
+when its interface opens or reconnects. Explicit Check status, Start, Stop and
+Set up on TV remain available; Restore settings & exit is safe to request from
+unknown state.
 
 BareRemote shows pending while a request is in progress. It changes the displayed
 mode only after an authenticated TV reply. A verified `starting` reply is progress,

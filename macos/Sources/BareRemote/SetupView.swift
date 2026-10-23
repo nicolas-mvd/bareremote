@@ -217,7 +217,7 @@ struct SetupView: View {
         section("Remote controls", symbol: "slider.horizontal.3") {
             VStack(alignment: .leading, spacing: 9) {
                 Text("Day / Night").font(.callout.weight(.medium))
-                Text("The sun or moon shows the last TV-confirmed picture preset. A question mark means it is unconfirmed. Sync checks again. Requires BareHome picture controls.")
+                Text("The sun or moon shows the last TV-confirmed picture preset. A question mark means it is unconfirmed. Tap the mode button to change and confirm the preset. Sync only reconnects. Requires BareHome picture controls.")
                     .font(.caption).foregroundStyle(.secondary)
                 Text("Quick access").font(.callout.weight(.medium))
                 Text("Use the TV icon in the menu bar or Show Desktop Remote. Open Remote for typing and hold-to-repeat controls.")

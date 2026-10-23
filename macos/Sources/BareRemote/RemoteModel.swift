@@ -22,7 +22,13 @@ final class OperationGate: @unchecked Sendable {
 }
 
 @MainActor final class RemoteModel: ObservableObject {
-    @Published var saved: SavedTV?
+    @Published var saved: SavedTV? {
+        didSet {
+            if oldValue?.host != saved?.host || oldValue?.certificate != saved?.certificate {
+                pictureState = "unknown"
+            }
+        }
+    }
     @Published var host = ""
     @Published var tvName = ""
     @Published var code = ""
@@ -69,7 +75,7 @@ final class OperationGate: @unchecked Sendable {
     var inputGeneration: Int { generation }
     var displayName: String { saved?.name.isEmpty == false ? saved!.name : "Android TV" }
     var modeSymbol: String { pictureState == "day" ? "sun.max" : pictureState == "night" ? "moon" : "questionmark" }
-    var modeLabel: String { pictureState == "day" ? "Day confirmed" : pictureState == "night" ? "Night confirmed" : "Picture mode unconfirmed" }
+    var modeLabel: String { pictureState == "day" ? "Day last confirmed" : pictureState == "night" ? "Night last confirmed" : "Picture mode unconfirmed" }
     var canType: Bool { keyboardMode && !surfaces.isEmpty && canControl && keyboardState?.canSendText == true }
     var keyboardFocusIdentifier: String { "\(generation):\(keyboardState?.focusID ?? 0)" }
     var keyboardHint: String {
@@ -234,7 +240,7 @@ final class OperationGate: @unchecked Sendable {
         stopHolding(); generation += 1; gate.cancel(); gate = OperationGate()
         idleWork?.cancel(); idleWork = nil; sessionLeaseUntil = 0; shortcutQueue.removeAll()
         pairing = nil; remote = nil; connected = false; awaitingCode = false
-        busy = false; pending = 0; pictureBusy = false; pictureState = "unknown"
+        busy = false; pending = 0; pictureBusy = false
         dogSequence += 1; dogMode = "unknown"; dogBusy = false
         dogStatus = "Check status to confirm Dog Mode on your TV."
         needsLocalNetworkAccess = false
@@ -245,7 +251,7 @@ final class OperationGate: @unchecked Sendable {
     func disconnect() { reset(); status = saved == nil ? "Add your TV to get started" : "Disconnected" }
     func openSetup() {
         disconnect(); detail = ""; host = saved?.host ?? host; tvName = saved?.name ?? tvName; setupOpen = true
-        refreshDogMode()
+        if saved != nil { sync() }
     }
     func closeSetup() {
         reset(); setupOpen = false; code = ""
@@ -301,7 +307,7 @@ final class OperationGate: @unchecked Sendable {
     func sync() {
         guard let saved else { openSetup(); return }
         connect(to: saved.host, name: saved.name, saveAddress: false, recoverAddress: true,
-                keepSetupOpen: setupOpen, dogAfterConnect: setupOpen ? "state" : nil)
+                keepSetupOpen: setupOpen)
     }
     func reconnect() { connect(to: host.trimmingCharacters(in: .whitespacesAndNewlines), name: tvName, saveAddress: true) }
     private func connect(to address: String, name: String, saveAddress: Bool, recoverAddress: Bool = false,
@@ -309,6 +315,7 @@ final class OperationGate: @unchecked Sendable {
         guard let saved else { return }
         guard validateAddress(address) else { return }
         reset(); busy = true; status = "Connecting…"; detail = ""
+        if keepSetupOpen { touchSessionLease() }
         if dogAfterConnect != nil {
             dogBusy = true
             dogStatus = dogAfterConnect == "setup" ? "Connecting to open Dog Mode setup…" : "Connecting to check Dog Mode…"
@@ -373,10 +380,7 @@ final class OperationGate: @unchecked Sendable {
                             DispatchQueue.main.async { self?.receiveKeyboard(state, revision: revision) }
                         }
                         self.setupOpen = keepSetupOpen; self.status = "Connected"
-                        // A queued toggle owns its one reply; do not race it with a startup query.
-                        let hasToggle = self.shortcutQueue.contains { $0.action == .toggle }
                         self.flushShortcuts()
-                        if !hasToggle && !keepSetupOpen { self.refreshPicture(toggle: false) }
                         if let dogAfterConnect { self.dogBusy = false; self.requestDogMode(dogAfterConnect) }
                         if self.surfaces.isEmpty { self.scheduleIdleDisconnect() }
                     } catch {

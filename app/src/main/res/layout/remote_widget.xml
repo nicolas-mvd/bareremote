@@ -18,7 +18,7 @@
                 android:src="@drawable/remote_icon_sync" android:contentDescription="Sync: reconnect to TV" />
             <ImageButton android:id="@+id/widget_mode" style="@style/WidgetRemoteIcon.Mode"
                 android:src="@drawable/remote_icon_mode_unknown"
-                android:contentDescription="Day/Night state unknown. Sync to check or tap to toggle TV mode." />
+                android:contentDescription="Day/Night state unknown. Tap to toggle TV mode." />
         </LinearLayout>
         <TextView android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" android:importantForAccessibility="no" />
         <ImageButton android:id="@+id/widget_power" style="@style/WidgetRemoteIcon"

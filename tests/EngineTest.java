@@ -18,6 +18,7 @@ public final class EngineTest {
     private static int assertions;
 
     public static void main(String[] args) throws Exception {
+        passiveOpeningAndReconnectNeverLaunchTvActivities();
         dogConnectionStatusSettlesAfterRecovery();
         dogSetupIsFixedForegroundCommand();
         dogModeStartingQueryCanRestore();
@@ -69,6 +70,35 @@ public final class EngineTest {
         changedAddressRejectsConcurrentControls();
         changedAddressCancelsOldCommands();
         System.out.println("Engine tests: " + assertions + " assertions passed");
+    }
+
+    private static void passiveOpeningAndReconnectNeverLaunchTvActivities() throws Exception {
+        RemoteEngine engine = engine();
+        try {
+            engine.resume(); idle(engine);
+            check(TvProtocol.Remote.pictureRequests.isEmpty() && TvProtocol.Remote.dogActions.isEmpty()
+                    && TvProtocol.Remote.dogSetups.isEmpty(), "opening the remote connects without launching a TV activity");
+            engine.settingsOpened(); idle(engine);
+            check("unknown".equals(engine.dogMode()) && !engine.dogBusy(), "opening Settings requires an explicit TV status check");
+            check(TvProtocol.Remote.pictureRequests.isEmpty() && TvProtocol.Remote.dogActions.isEmpty(), "Settings does not request an automatic TV snapshot");
+            engine.refreshDogMode(); idle(engine); waitFor(() -> !engine.dogBusy());
+            engine.startDogMode(); idle(engine); waitFor(() -> !engine.dogBusy());
+            check("active".equals(engine.dogMode()) && TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start")), "explicit status and Start remain available");
+            engine.settingsOpened(); idle(engine);
+            check("unknown".equals(engine.dogMode()) && TvProtocol.Remote.dogActions.size() == 2, "reopening Settings cannot present an old active snapshot as freshly checked");
+            engine.stopDogMode(); idle(engine); waitFor(() -> !engine.dogBusy());
+            check("off".equals(engine.dogMode()) && "stop".equals(TvProtocol.Remote.dogActions.get(2)), "unknown Settings still permits explicit safe restore");
+            engine.togglePictureMode(null); idle(engine); waitFor(() -> "night".equals(engine.pictureState()));
+            check(TvProtocol.Remote.pictureToggles.equals(java.util.Arrays.asList(true)), "explicit picture tap still changes and confirms the preset");
+            engine.pause(); idle(engine); engine.resume(); idle(engine); engine.reconnect(); idle(engine);
+            check(TvProtocol.Remote.pictureToggles.equals(java.util.Arrays.asList(true))
+                    && TvProtocol.Remote.dogActions.equals(java.util.Arrays.asList("state", "start", "stop"))
+                    && TvProtocol.Remote.dogSetups.isEmpty(), "reopen and Sync add no app links after explicit commands");
+            check("night".equals(engine.pictureState()), "same paired TV retains its last confirmed picture through reconnect");
+            check("unknown".equals(engine.dogMode()), "new connection never inherits a confirmed Dog Mode state");
+            engine.openDogSetup(); idle(engine); waitFor(() -> !engine.dogBusy());
+            check(TvProtocol.Remote.dogSetups.equals(java.util.Arrays.asList("barehome://dog/setup")), "explicit setup remains available");
+        } finally { shutdown(engine); }
     }
 
     private static void dogConnectionStatusSettlesAfterRecovery() throws Exception {
@@ -658,6 +688,7 @@ public final class EngineTest {
         try {
             TvProtocol.Remote.holdPictureReplies = true;
             engine.resume(); idle(engine); idle(engine);
+            engine.requestPictureState(null); idle(engine);
             TvProtocol.Remote original = TvProtocol.Remote.connections.get(0);
             PictureStateClient oldPicture = TvProtocol.Remote.pictureRequests.get(0);
             TvProtocol.Remote.pictureRequests.clear(); TvProtocol.Remote.pictureToggles.clear();
@@ -1271,7 +1302,7 @@ public final class EngineTest {
             TvProtocol.Remote.unsupportedPicture = true;
             List<String> sync = new ArrayList<>();
             engine.reconnect(sync::add); idle(engine);
-            check(sync.size() == 1 && sync.get(0) == null, "optional state query does not break Sync success");
+            check(sync.size() == 1 && sync.get(0) == null, "Sync succeeds without using the unsupported picture API");
             engine.sendWidgetKey(22, error -> {}); idle(engine);
             check(TvProtocol.Remote.keys.size() == 1, "unsupported picture API does not disable regular keys");
             engine.forget(); Handler.drain();

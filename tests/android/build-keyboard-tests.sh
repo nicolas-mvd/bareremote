@@ -10,7 +10,7 @@ TEST_BUILD=build/android-keyboard-tests
 mkdir -p "$TEST_BUILD/classes" "$TEST_BUILD/dex"
 "$BT/aapt2" link -I "$ANDROID_JAR" --manifest tests/android/AndroidManifest.xml \
     --min-sdk-version 26 --target-sdk-version 35 -o "$TEST_BUILD/resources.apk"
-javac --release 8 -classpath "$ANDROID_JAR:build/classes" -d "$TEST_BUILD/classes" tests/android/KeyboardInstrumentation.java
+javac --release 8 -classpath "$ANDROID_JAR:build/classes" -d "$TEST_BUILD/classes" tests/android/*Instrumentation.java
 jar cf "$TEST_BUILD/classes.jar" -C "$TEST_BUILD/classes" .
 "$BT/d8" --release --min-api 26 --lib "$ANDROID_JAR" --classpath build/classes.jar \
     --output "$TEST_BUILD/dex" "$TEST_BUILD/classes.jar"
