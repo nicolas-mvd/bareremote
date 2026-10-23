@@ -16,7 +16,11 @@ import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
-/** Loopback-only IME peer. Its assertions never print received text. */
+/**
+ * Loopback-only IME peer following the TV service's direction-specific wire
+ * contract (ImeFeature/bsi and ClientMessageHandler/bsh, not the community
+ * symmetric message names). Its assertions never print received text.
+ */
 public final class NativeImeTv {
     public static void main(String[] args) throws Exception {
         if (args.length != 2) throw new IllegalArgumentException("NativeImeTv test.p12 PORT");
@@ -71,18 +75,21 @@ public final class NativeImeTv {
             return;
         }
         require(session == 1);
-        write(out, app(7)); // Current-app only: no editor and no automatic show.
-        write(out, counters(7, 9));
-        write(out, show(9));
+        write(out, app(0)); // Current-app only: no editor and no automatic show.
+        write(out, editor(7, 9, "existing\ud83d\ude00", 10, 10));
+        write(out, visibility(true));
         write(out, new Proto.Writer().message(8, new Proto.Writer().number(1, 123)));
-        text(next(in), 7, 9, "A\ud83d\ude00\u00e9", 3);
-        write(out, counters(8, 9)); // Same editor, newer ACK; queued text keeps its target.
+        text(next(in), 7, 9, "A\ud83d\ude00\u00e9", 10, 10);
+        // Content revisions advance without changing the editor identifier.
+        write(out, status(10, "existing\ud83d\ude00A\ud83d\ude00\u00e9", 14, 14));
+        write(out, new Proto.Writer().message(23, new Proto.Writer().number(2, 11).number(3, 13)));
         write(out, new Proto.Writer().message(8, new Proto.Writer().number(1, 124)));
-        text(next(in), 8, 9, "\u03b2", 0);
-        write(out, counters(9, 10));
-        write(out, show(10));
+        text(next(in), 7, 10, "\u03b2", 11, 13);
+        write(out, editor(8, 12, "", 0, 0));
+        write(out, visibility(true));
         for (int code : new int[] {67, 66, 21, 112, 61, 19, 20, 22}) key(next(in), code);
-        write(out, app(8)); // Editor lost: stale text/key requests must never appear.
+        write(out, app(0)); // Editor lost: stale text/key requests must never appear.
+        write(out, visibility(false));
         key(next(in), 24);
         require(in.read() == -1);
     }
@@ -98,15 +105,17 @@ public final class NativeImeTv {
         throw new IllegalStateException("Too many ping replies");
     }
 
-    private static void text(Proto.Message message, long ime, long field, String expected, int cursor) throws Exception {
+    private static void text(Proto.Message message, long ime, long field, String expected, int start, int end) throws Exception {
         require(message.fields.size() == 1 && message.has(21));
         Proto.Message batch = message.message(21);
         require(batch.integer(1, 0) == ime && batch.integer(2, 0) == field);
         require(batch.fields.size() == 3);
         Proto.Message edit = batch.message(3);
-        require(edit.integer(1, 0) == 1 && edit.fields.size() == 2);
+        // Real RemoteEditInfo is a oneof: field 2 is an insert object. An
+        // "insert=1" scalar in field 1 belongs to the inaccurate public schema.
+        require(edit.fields.size() == 1 && edit.has(2));
         Proto.Message object = edit.message(2);
-        require(object.integer(1, 0) == cursor && object.integer(2, 0) == cursor);
+        require(object.integer(1, 0) == start && object.integer(2, 0) == end);
         require(expected.equals(new String(object.bytes(3), StandardCharsets.UTF_8)));
     }
 
@@ -121,14 +130,24 @@ public final class NativeImeTv {
                 new Proto.Writer().number(1, counter).text(12, "local.ime.fixture")));
     }
 
-    private static Proto.Writer counters(int ime, int field) throws Exception {
-        return new Proto.Writer().message(21, new Proto.Writer().number(1, ime).number(2, field));
+    private static Proto.Writer visibility(boolean visible) throws Exception {
+        return new Proto.Writer().message(21, new Proto.Writer().number(1, visible ? 1 : 0).number(2, 0));
     }
 
-    private static Proto.Writer show(int counter) throws Exception {
-        return new Proto.Writer().message(22, new Proto.Writer().message(2,
-                new Proto.Writer().number(1, counter).text(2, "existing\ud83d\ude00")
-                        .number(3, 10).number(4, 10).text(6, "Search")));
+    private static Proto.Writer editor(int editor, int revision, String value, int start, int end) throws Exception {
+        return new Proto.Writer().message(20, new Proto.Writer().message(1,
+                new Proto.Writer().number(1, editor).number(2, 1).text(12, "local.ime.fixture"))
+                .message(2, field(revision, value, start, end)));
+    }
+
+    private static Proto.Writer status(int revision, String value, int start, int end) throws Exception {
+        return new Proto.Writer().message(22, new Proto.Writer().number(1, 1)
+                .message(2, field(revision, value, start, end)));
+    }
+
+    private static Proto.Writer field(int revision, String value, int start, int end) throws Exception {
+        return new Proto.Writer().number(1, revision).text(2, value)
+                .number(3, start).number(4, end).text(6, "Search");
     }
 
     private static void require(boolean condition) {

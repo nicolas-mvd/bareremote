@@ -12,8 +12,12 @@ import java.util.List;
 public final class KeyboardInstrumentation extends Instrumentation {
     private int assertions;
     private boolean integration;
+    private boolean pairLoopback;
     @Override public void onCreate(Bundle arguments) {
-        super.onCreate(arguments); integration = arguments != null && arguments.getString("integration", "false").equals("true"); start();
+        super.onCreate(arguments);
+        integration = arguments != null && arguments.getString("integration", "false").equals("true");
+        pairLoopback = arguments != null && arguments.getString("pair_loopback", "false").equals("true");
+        start();
     }
     @Override public void onStart() {
         Bundle result = new Bundle();
@@ -29,6 +33,17 @@ public final class KeyboardInstrumentation extends Instrumentation {
             finish(0, result);
         } else {
             result.putString("stream", "Native keyboard: " + assertions + " assertions passed\n");
+            try {
+                java.security.KeyStore keys = java.security.KeyStore.getInstance("AndroidKeyStore");
+                keys.load(null);
+                java.security.cert.Certificate certificate = keys.getCertificate("bareremote.client.v3");
+                if (certificate != null) {
+                    byte[] digest = java.security.MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded());
+                    StringBuilder hex = new StringBuilder();
+                    for (byte value : digest) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+                    result.putString("client_certificate_sha256", hex.toString());
+                }
+            } catch (Exception ignored) { /* Identity inspection is not a keyboard assertion. */ }
             finish(-1, result);
         }
     }
@@ -82,6 +97,7 @@ public final class KeyboardInstrumentation extends Instrumentation {
                 .setClassName("uy.nico.bareremote", "uy.nico.bareremote.MainActivity")
                 .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK));
         RemoteEngine engine = RemoteEngine.get(getTargetContext());
+        if (pairLoopback) pairLoopback(engine);
         waitFor(() -> engine.keyboardState().supported, "paired loopback session ready");
         check(!engine.keyboardState().active, "connection alone does not open keyboard");
         click(activity, "Keyboard mode");
@@ -92,7 +108,7 @@ public final class KeyboardInstrumentation extends Instrumentation {
         check(!visible(activity), "explicit Remote button restores normal remote");
         click(activity, "OK. Touch and hold for a long press");
         waitFor(() -> visible(activity) && engine.keyboardState().canType(), "TV SHOW automatically switches to keyboard");
-        long firstFocus = engine.keyboardState().focusID;
+        int firstEditor = engine.keyboardState().imeCounter;
         runOnMainSync(() -> {
             KeyboardInputView view = editor(activity);
             InputConnection input = view.onCreateInputConnection(new EditorInfo());
@@ -105,14 +121,24 @@ public final class KeyboardInstrumentation extends Instrumentation {
         });
         click(activity, "Delete before the TV text cursor"); click(activity, "Enter on TV");
         networkIdle(engine);
-        check(engine.keyboardState().canType(), "Unicode/paste/edit keys leave paired session available");
+        waitFor(() -> engine.keyboardState().canType(), "Unicode/paste/edit keys leave paired session available");
         click(activity, "Return to normal remote mode");
         click(activity, "OK. Touch and hold for a long press");
         android.os.SystemClock.sleep(400); waitForIdleSync();
-        check(!visible(activity) && engine.keyboardState().focusID == firstFocus,
+        check(!visible(activity) && engine.keyboardState().imeCounter == firstEditor,
                 "repeated TV SHOW for same field honors manual remote override");
+        click(activity, "Keyboard mode");
+        check(visible(activity) && engine.keyboardState().canType(), "manual keyboard opens a valid editor after returning to Remote");
+        runOnMainSync(() -> editor(activity).onCreateInputConnection(new EditorInfo()).commitText("manual", 1));
+        networkIdle(engine);
+        check(editor(activity).length() == 0 && engine.keyboardState().canType(), "manual typing is committed once without a local text mirror");
+        click(activity, "Return to normal remote mode");
         click(activity, "OK. Touch and hold for a long press");
-        waitFor(() -> visible(activity) && engine.keyboardState().focusID != firstFocus, "new TV focus returns to keyboard automatically");
+        waitFor(() -> visible(activity) && engine.keyboardState().imeCounter != firstEditor, "new TV focus returns to keyboard automatically");
+        click(activity, "Delete before the TV text cursor");
+        click(activity, "Enter on TV");
+        networkIdle(engine);
+        check(engine.keyboardState().canType(), "no-op Delete and Enter without a TV status cannot disable empty-editor input");
         runOnMainSync(() -> editor(activity).onCreateInputConnection(new EditorInfo()).setComposingText("discard on focus loss", 1));
         runOnMainSync(() -> engine.sendKey(4));
         waitFor(() -> !visible(activity), "TV focus loss returns to remote");
@@ -124,6 +150,20 @@ public final class KeyboardInstrumentation extends Instrumentation {
         runOnMainSync(() -> up.dispatchTouchEvent(android.view.MotionEvent.obtain(0, 700, android.view.MotionEvent.ACTION_UP, up.getWidth()/2f, up.getHeight()/2f, 0)));
         networkIdle(engine);
         check(engine.keyboardState().supported, "normal hold controls retain connected session");
+    }
+    private void pairLoopback(RemoteEngine engine) throws Exception {
+        // Test-only, fixed emulator loopback target. The six-character ephemeral fake-TV
+        // code is supplied through this app's private external-files directory by the harness.
+        java.io.File code = new java.io.File(getTargetContext().getExternalFilesDir(null), "keyboard-test-code");
+        code.delete();
+        runOnMainSync(() -> engine.startPairing("10.0.2.2"));
+        long until = android.os.SystemClock.elapsedRealtime() + 60000;
+        while (!code.isFile() && android.os.SystemClock.elapsedRealtime() < until) android.os.SystemClock.sleep(50);
+        check(code.isFile(), "loopback pairing code supplied by test harness");
+        String value = new String(java.nio.file.Files.readAllBytes(code.toPath()), java.nio.charset.StandardCharsets.US_ASCII).trim();
+        code.delete();
+        check(value.matches("[0-9A-Fa-f]{6}"), "loopback pairing code format valid");
+        runOnMainSync(() -> engine.finishPairing(value));
     }
     private void networkIdle(RemoteEngine engine) throws Exception {
         java.lang.reflect.Field field = RemoteEngine.class.getDeclaredField("worker"); field.setAccessible(true);

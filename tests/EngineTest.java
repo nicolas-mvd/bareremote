@@ -66,7 +66,7 @@ public final class EngineTest {
             check(engine.keyboardState().canType(), "foreground exposes ephemeral keyboard focus");
             CountDownLatch release = blockWorker(engine);
             engine.sendText("é😀漢"); engine.sendText("paste"); engine.sendKeyboardKey(67); engine.sendKeyboardKey(66);
-            remote.keyboard(new KeyboardState(true, true, true, 5, 1, 10)); Handler.drain();
+            remote.keyboard(new KeyboardState(true, true, true, 4, 2, 10)); Handler.drain();
             release.countDown(); idle(engine);
             check(TvProtocol.Remote.texts.size() == 2 && "é😀漢".equals(TvProtocol.Remote.texts.get(0))
                     && "paste".equals(TvProtocol.Remote.texts.get(1)), "ACK revision cannot lose or duplicate queued Unicode commits");

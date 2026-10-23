@@ -714,7 +714,7 @@ final class RemoteEngine {
             if (!foreground || pairingBusy || isReconnectingTo()) return;
             connection = remote;
             field = keyboardState();
-            if (connection == null || !field.canType()) {
+            if (connection == null || (text != null ? !field.canType() : !field.supported || !field.active)) {
                 error(field.supported ? "Select a text field on the TV first"
                         : "This TV has not made its keyboard available. Tap Sync or select a text field.");
                 return;
@@ -742,7 +742,7 @@ final class RemoteEngine {
             } catch (Exception failure) {
                 synchronized (connectionLock) {
                     operation.writing = null;
-                    if (writeAttempted) discard(connection);
+                    if (writeAttempted && !(failure instanceof KeyboardState.InputUnavailableException)) discard(connection);
                 }
                 // Messages describe metadata/delivery only; text is never logged or included.
                 complete(operation, message(failure));

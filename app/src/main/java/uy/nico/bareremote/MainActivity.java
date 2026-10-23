@@ -53,7 +53,8 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     private KeyboardInputView keyboardInput;
     private TextView keyboardStatus;
     private boolean keyboardVisible;
-    private long manuallyClosedFocus = -1;
+    private Boolean tvKeyboardVisible;
+    private long manuallyClosedEditor = -1;
     private long displayedFocus = -1;
     private AlertDialog setupDialog;
     private AlertDialog discoveryDialog;
@@ -276,7 +277,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         });
     }
     private void hideKeyboard(boolean manual) {
-        if (manual) manuallyClosedFocus = engine.keyboardState().focusID;
+        if (manual) manuallyClosedEditor = engine.keyboardState().imeCounter;
         keyboardVisible = false;
         engine.cancelKeyboardInput();
         if (keyboardInput == null) return;
@@ -297,16 +298,21 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
     }
     @Override public void onKeyboardState(KeyboardState state) {
         if (keyboardInput == null) return;
+        boolean hidden = Boolean.FALSE.equals(state.keyboardVisible)
+                && !Boolean.FALSE.equals(tvKeyboardVisible);
+        tvKeyboardVisible = state.keyboardVisible;
         if (displayedFocus != state.focusID) {
             keyboardInput.accepting(false);
             engine.cancelKeyboardInput();
             displayedFocus = state.focusID;
         }
         if (!state.active) {
-            manuallyClosedFocus = -1;
+            manuallyClosedEditor = -1;
             keyboardInput.accepting(false);
             if (keyboardVisible) hideKeyboard(false);
-        } else if (state.showRequested && !keyboardVisible && state.focusID != manuallyClosedFocus) showKeyboard(false);
+        } else if (hidden) {
+            if (keyboardVisible) hideKeyboard(false);
+        } else if (state.showRequested && !keyboardVisible && state.imeCounter != manuallyClosedEditor) showKeyboard(false);
         updateKeyboardStatus(state);
     }
     @Override public void onBackPressed() {
@@ -798,7 +804,7 @@ public final class MainActivity extends Activity implements RemoteEngine.Listene
         resumed = false;
         cancelRepeatingButtons();
         hideKeyboard(false);
-        manuallyClosedFocus = -1;
+        manuallyClosedEditor = -1;
         cancelAddressReconnect();
         if (pairingInProgress || pendingCode) {
             pairingInterrupted = true;

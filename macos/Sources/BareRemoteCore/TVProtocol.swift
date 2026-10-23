@@ -261,9 +261,9 @@ public final class TVRemote: @unchecked Sendable {
                          deadline: TimeInterval? = nil) throws {
         let operationDeadline = try keyboardDeadline(deadline)
         // Validate bounds before joining the serialized writer; the message is
-        // encoded again with the latest IME counter under the state lock.
+        // encoded again with the latest content revision and cursor under the state lock.
         _ = try TVKeyboardTracker.textMessage(text, context: context)
-        try sendKeyboard(context: context, deadline: operationDeadline) { current in
+        try sendKeyboard(context: context, deadline: operationDeadline, committedText: text) { current in
             try TVKeyboardTracker.textMessage(text, context: current)
         }
     }
@@ -276,7 +276,7 @@ public final class TVRemote: @unchecked Sendable {
         }
         let operationDeadline = try keyboardDeadline(deadline)
         let message = try Proto.Writer().message(10, Proto.Writer().number(1, UInt64(code)).number(2, 3))
-        try sendKeyboard(context: context, deadline: operationDeadline) { _ in message }
+        try sendKeyboard(context: context, deadline: operationDeadline, keyboardKey: code) { _ in message }
     }
 
     public func sendKey(_ code: Int) throws {
@@ -344,7 +344,7 @@ public final class TVRemote: @unchecked Sendable {
         if message.has(1) {
             let negotiated = try message.message(1).integer(1) & Self.requestedFeatures
             guard negotiated & 2 != 0 else { throw TVProtocolError.unsupported("The TV remote service does not support keys.") }
-            let device = try Proto.Writer().number(3, 1).text(4, "1").text(5, "uy.nico.bareremote.macos").text(6, "0.3.0")
+            let device = try Proto.Writer().number(3, 1).text(4, "1").text(5, "uy.nico.bareremote.macos").text(6, "0.3.1")
             try send(Proto.Writer().message(1, Proto.Writer().number(1, negotiated).message(2, device)), deadline: deadline)
             state.lock()
             features = negotiated
@@ -363,7 +363,7 @@ public final class TVRemote: @unchecked Sendable {
             let ping = try message.message(8).integer(1)
             try send(Proto.Writer().message(9, Proto.Writer().number(1, ping)), deadline: deadline)
         }
-        if message.has(20) || message.has(21) || message.has(22) {
+        if (20...24).contains(where: message.has) {
             state.lock()
             do {
                 let before = keyboard.snapshot
@@ -429,20 +429,25 @@ public final class TVRemote: @unchecked Sendable {
         return TLSTransport.deadline(after: min(5, remaining))
     }
 
-    private func sendKeyboard(context: TVKeyboardContext, deadline: UInt64,
+    private func sendKeyboard(context: TVKeyboardContext, deadline: UInt64, committedText: String? = nil,
+                              keyboardKey: Int? = nil,
                               makeMessage: (TVKeyboardContext) throws -> Proto.Writer) throws {
         commandLock.lock(); defer { commandLock.unlock() }
         outputLock.lock(); defer { outputLock.unlock() }
         guard isOpen else { throw TVProtocolError.closed }
+        guard !cancellation(), !Thread.current.isCancelled else { throw TVProtocolError.cancelled }
+        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw TVProtocolError.timedOut }
         state.lock()
         let data: Data
         do {
-            let current = try keyboard.currentContext(matching: context)
+            let current = try keyboard.currentContext(matching: context, requireSelection: committedText != nil)
             data = try makeMessage(current).build()
+            guard !cancellation(), !Thread.current.isCancelled else { throw TVProtocolError.cancelled }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw TVProtocolError.timedOut }
+            if let committedText { keyboard.committed(committedText, context: current) }
+            else if let keyboardKey { keyboard.keyWritten(keyboardKey); scheduleKeyboardNotificationLocked() }
             state.unlock()
         } catch { state.unlock(); throw error }
-        guard !cancellation(), !Thread.current.isCancelled else { throw TVProtocolError.cancelled }
-        guard DispatchTime.now().uptimeNanoseconds < deadline else { throw TVProtocolError.timedOut }
         do { try transport.writeFrame(data, deadline: deadline) }
         catch { connectionFailed(); throw error }
         recordCommand()

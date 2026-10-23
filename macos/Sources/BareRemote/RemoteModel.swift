@@ -98,15 +98,21 @@ final class OperationGate: @unchecked Sendable {
         guard generation == revision else { return }
         let previous = keyboardState
         keyboardState = state
+        let becameHidden = state.keyboardVisible == false && previous?.keyboardVisible != false
         if previous?.focusID != state.focusID { keyboardNotice = ""; invalidateKeyboardInput() }
         if !state.active, previous?.active == true {
             keyboardMode = false
             keyboardRemoteOverride = nil
             keyboardNotice = ""
+        } else if becameHidden {
+            stopHolding()
+            invalidateKeyboardInput()
+            keyboardMode = false
+            keyboardNotice = ""
         }
         if state.showRequestID > keyboardShowRequest {
             keyboardShowRequest = state.showRequestID
-            if state.active, keyboardRemoteOverride != state.focusID {
+            if state.active, state.keyboardVisible == true, keyboardRemoteOverride != state.focusID {
                 stopHolding()
                 keyboardMode = true
             }

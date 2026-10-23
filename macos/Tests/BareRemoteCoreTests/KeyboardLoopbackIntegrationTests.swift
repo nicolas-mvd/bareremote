@@ -41,13 +41,14 @@ final class KeyboardLoopbackIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try remote.sendText("", context: captured))
         XCTAssertThrowsError(try remote.sendKeyboardKey(26, context: captured))
         try remote.sendText("A😀é", context: captured)
-        try until { remote.keyboardState.context?.imeCounter == 8 }
-        XCTAssertEqual(remote.keyboardState.focusID, initial.focusID)
+        try until { remote.keyboardState.context?.fieldCounter == 10 && remote.keyboardState.selectionStart == 11 && remote.keyboardState.selectionEnd == 13 }
+        XCTAssertGreaterThan(remote.keyboardState.focusID, initial.focusID)
         XCTAssertEqual(remote.keyboardState.showRequestID, initial.showRequestID)
-        // A serially queued second commit keeps its original field while using
-        // the current ACK counter, instead of dropping a legitimate character.
-        try remote.sendText("β", context: captured)
-        try until { remote.keyboardState.context?.fieldCounter == 10 }
+        // The real selection message changed the range and cancelled the old
+        // target. New input uses that selection and the latest content revision.
+        let selectedRange = try XCTUnwrap(remote.keyboardState.context)
+        try remote.sendText("β", context: selectedRange)
+        try until { remote.keyboardState.context?.imeCounter == 8 }
         let next = try XCTUnwrap(remote.keyboardState.context)
         XCTAssertThrowsError(try remote.sendText("stale", context: captured))
         XCTAssertThrowsError(try remote.sendKeyboardKey(67, context: captured))

@@ -298,3 +298,10 @@ downloaded and verified the public 0.3.0 ZIP, installed and reopened build 11 in
 Applications, retained the original pairing byte for byte, and reported up to
 date on a new check. The installed executable matched the published build and
 strict signature verification passed. See the [live update validation](../docs/MACOS_UPDATES.md#tests).
+
+Version **0.3.1** fixes the same directional IME protocol mistake as Android
+0.6.2: TV keyboard visibility was mistaken for input counters, and insertion
+coordinates were based on the typed string rather than the actual TV cursor.
+The corrected suite passes 76 tests across normal, native AppKit and actual
+loopback TLS tests. The fixtures now follow Remote Service 7.00.999235495’s
+actual server/client message directions; see the [protocol notes](../docs/PROTOCOL.md#native-keyboard-input).

@@ -60,7 +60,7 @@ If the connection gets stuck, tap the **Sync icon** in the centered green strip 
 
 ## Type on your TV
 
-Version 0.6.0 adds a native keyboard mode. Select a search box or another text
+Version 0.6.2 corrects TV keyboard compatibility (keyboard mode was introduced in 0.6.0). Select a search box or another text
 field on the TV. When Android TV Remote Service asks to show its keyboard,
 the open BareRemote app switches automatically and opens your phone's keyboard.
 You can also tap the **keyboard icon** between the down arrow and Home to open
@@ -293,3 +293,13 @@ and recenters the top green Sync/mode pill. This small layout patch passed a
 signed build and 38 focused native layout/mode assertions at 411dp and 320dp
 emulator widths. Pairing, protocol and widget behavior are unchanged; no
 physical-TV actions were sent during validation.
+
+Version **0.6.2** fixes automatic keyboard switching and manual typing with the
+TV service’s actual direction-specific IME messages. Versions 0.6.0/0.6.1 used
+a symmetric wire schema and their simulated tests repeated that assumption;
+the corrected tests reproduce both reported failures in the released client.
+The fix separates editor identity from content revision, uses the TV’s actual
+cursor for Unicode insertion, handles visibility and content acknowledgments
+separately, and preserves stale-input cancellation. The corrected host suite
+passes 1,054 assertions and the actual Android app passes 63 native assertions
+against the independent loopback service.

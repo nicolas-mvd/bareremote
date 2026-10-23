@@ -222,65 +222,106 @@ public final class ProtocolTest {
         Proto.writeFrame(framed, new Proto.Writer().message(envelope, body).build());
         return Proto.parse(Proto.readFrame(new ByteArrayInputStream(framed.toByteArray())));
     }
+    private static Proto.Writer editor(int id, int revision, int start, int end) {
+        return new Proto.Writer().message(1, new Proto.Writer().number(1, id).number(2, 1)
+                .text(12, "test.app")).message(2, new Proto.Writer().number(1, revision)
+                .number(3, start).number(4, end));
+    }
+    private static Proto.Writer field(int revision, int start, int end) {
+        return new Proto.Writer().number(1, revision).number(3, start).number(4, end);
+    }
     private static void testKeyboardState() throws Exception {
         KeyboardSession keyboard = new KeyboardSession();
         keyboard.supported(true);
         keyboard.receive(keyboardMessage(20, new Proto.Writer().message(1,
-                new Proto.Writer().number(1, 1).text(12, "test.app"))));
-        check(!keyboard.snapshot().active, "current app is not keyboard focus");
-        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 1).number(2, 1)));
-        keyboard.receive(keyboardMessage(20, new Proto.Writer().message(2, new Proto.Writer().number(1, 1))));
-        check(keyboard.snapshot().canType() && !keyboard.snapshot().showRequested,
-                "trusted field context enables explicit manual typing without automatic SHOW");
-        check(Proto.parse(keyboard.commit("manual", keyboard.snapshot()).build()).has(21),
-                "manual keyboard sends through valid context without SHOW");
-        keyboard.clear(); keyboard.supported(true);
-        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
-                new Proto.Writer().number(1, 8).text(2, "secret never mirrored"))));
-        check(keyboard.snapshot().active && !keyboard.snapshot().canType(), "SHOW switches before counters but cannot send");
-        fails(() -> keyboard.commit("a", keyboard.snapshot()), "unknown counters cannot type");
-        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 4).number(2, 8)));
-        KeyboardState field = keyboard.snapshot();
-        check(field.canType(), "matching counter notification enables keyboard");
-        long focus = field.focusID;
-        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 8))));
-        check(keyboard.snapshot().focusID == focus, "duplicate show preserves manual remote override token");
-        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 3).number(2, 9)));
-        check(keyboard.snapshot().imeCounter == 4 && keyboard.snapshot().fieldCounter == 8, "stale counter ignored");
-        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 5).number(2, 8)));
-        Proto.Message batch = Proto.parse(keyboard.commit("é😀漢", field).build()).message(21);
-        check(batch.integer(1, 0) == 5 && batch.integer(2, 0) == 8, "queued text uses latest ACK revision on same field");
+                new Proto.Writer().text(12, "test.app"))));
+        check(!keyboard.snapshot().active, "current app without an editor is not keyboard focus");
+        keyboard.receive(keyboardMessage(20, editor(7, 9, 4, 7)));
+        KeyboardState target = keyboard.snapshot();
+        check(target.canType() && !target.showRequested,
+                "server 20 independently supplies editor identity, content revision and selection");
+        check(target.imeCounter == 7 && target.fieldCounter == 9,
+                "editor counter and unrelated content revision are not required to match");
+        Proto.Message batch = Proto.parse(keyboard.commit("é😀漢", target).build()).message(21);
+        check(batch.integer(1, 0) == 7 && batch.integer(2, 0) == 9,
+                "manual typing uses server 20 counters without waiting for server 21");
         Proto.Message object = batch.message(3).message(2);
-        check(batch.message(3).integer(1, 0) == 1, "known commit operation encoded");
-        check(object.integer(1, 0) == 3 && object.integer(2, 0) == 3, "emoji cursor offsets use UTF-16");
+        check(!batch.message(3).has(1), "replacement uses the real edit oneof without an insert integer");
+        check(object.integer(1, 0) == 4 && object.integer(2, 0) == 7,
+                "replacement uses actual selected TV coordinates, not inserted string length minus one");
         check(Arrays.equals(object.bytes(3), "é😀漢".getBytes("UTF-8")), "Unicode UTF-8 bytes preserved");
-        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 5).number(2, 9)));
-        check(!keyboard.snapshot().canType(), "new counter field cannot retarget old show");
-        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 9))));
-        check(keyboard.snapshot().focusID != focus && keyboard.snapshot().canType(), "new focus has distinct override token");
-        fails(() -> keyboard.commit("old", field), "old field text never retargeted");
-        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 8))));
-        check(keyboard.snapshot().fieldCounter == 9 && keyboard.snapshot().canType(), "stale show ignored");
-        keyboard.receive(keyboardMessage(20, new Proto.Writer()));
-        check(!keyboard.snapshot().active, "focus loss clears active keyboard");
-        fails(() -> keyboard.commit("hidden", field), "focus loss rejects text");
+        batch = Proto.parse(keyboard.commit("!", target).build()).message(21);
+        object = batch.message(3).message(2);
+        check(object.integer(1, 0) == 8 && object.integer(2, 0) == 8,
+                "rapid second chunk uses predicted UTF-16 cursor including surrogate pairs");
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().number(1, 1).message(2, field(10, 8, 8))));
+        check(keyboard.snapshot().sameField(target), "own edit acknowledgment preserves queued editor token");
+        batch = Proto.parse(keyboard.commit("?", target).build()).message(21);
+        check(batch.integer(2, 0) == 10 && batch.message(3).message(2).integer(1, 0) == 9,
+                "lagging own acknowledgment updates content revision without rewinding predicted cursor");
+        check(!keyboard.snapshot().showRequested, "server 22 content updates do not request keyboard display");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 1).number(2, 3)));
+        long show = keyboard.snapshot().showRequestID;
+        check(keyboard.snapshot().showRequested && Boolean.TRUE.equals(keyboard.snapshot().keyboardVisible),
+                "server 21 true requests automatic display and flags are not counters");
+        check(keyboard.snapshot().imeCounter == 7 && keyboard.snapshot().fieldCounter == 10,
+                "server 21 visibility cannot overwrite editor counters");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 1)));
+        check(keyboard.snapshot().showRequestID == show, "duplicate show preserves manual Remote choice");
+        keyboard.receive(keyboardMessage(23, new Proto.Writer().number(2, 2).number(3, 3)));
+        check(!keyboard.snapshot().sameField(target), "external selection changes reject queued old-coordinate input");
+        check(keyboard.snapshot().showRequestID == show, "selection changes do not replay keyboard show");
+        final KeyboardState oldSelection = target;
+        fails(() -> keyboard.commit("stale", oldSelection), "stale selected range is never retargeted");
+        target = keyboard.snapshot();
+        batch = Proto.parse(keyboard.commit("x", target).build()).message(21);
+        check(batch.message(3).message(2).integer(1, 0) == 2
+                && batch.message(3).message(2).integer(2, 0) == 3,
+                "server 23 selection fields two and three are used for replacement");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer()));
+        check(keyboard.snapshot().active && keyboard.snapshot().canType()
+                && Boolean.FALSE.equals(keyboard.snapshot().keyboardVisible),
+                "hidden TV keyboard retains editor for deliberate manual typing");
+        keyboard.receive(keyboardMessage(20, editor(8, 17, 0, 0)));
+        check(!keyboard.snapshot().sameField(target), "new editor invalidates previous editor token");
+        keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 1)));
+        check(keyboard.snapshot().showRequestID > show, "new editor can request automatic keyboard again");
+        target = keyboard.snapshot();
+        keyboard.keyWritten(66);
+        check(keyboard.snapshot().canType(), "Enter without a status callback cannot disable unchanged editor forever");
+        keyboard.keyWritten(67);
+        check(keyboard.snapshot().canType(), "no-op Delete at cursor zero cannot disable text entry");
+        keyboard.receive(keyboardMessage(23, new Proto.Writer().number(2, 1).number(3, 1)));
+        target = keyboard.snapshot();
+        keyboard.keyWritten(67);
+        check(!keyboard.snapshot().canType(), "editing keys require fresh exact TV cursor before the next text replacement");
+        keyboard.checkField(target);
+        keyboard.receive(keyboardMessage(22, new Proto.Writer().number(1, 1).message(2, field(18, 0, 0))));
+        check(keyboard.snapshot().canType(), "a fresh status after an editing key restores text entry");
+        keyboard.receive(keyboardMessage(24, new Proto.Writer()));
+        check(!keyboard.snapshot().canType(), "external remote editing invalidates stale cursor until fresh status");
+        keyboard.receive(keyboardMessage(20, new Proto.Writer().message(1, new Proto.Writer().text(12, "test.other"))));
+        check(!keyboard.snapshot().active, "editor counter zero reports focus loss");
+        fails(() -> keyboard.commit("hidden", keyboard.snapshot()), "focus loss rejects text");
         for (long bad : new long[] {-1, 2147483648L, Long.MAX_VALUE}) {
-            fails(() -> keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, bad))), "invalid IME counter bounded");
+            fails(() -> keyboard.receive(keyboardMessage(20, editor(7, 9, 0, 0)
+                    .message(1, new Proto.Writer().number(1, bad).number(2, 1)))), "invalid editor counter bounded");
             fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
-                    new Proto.Writer().number(1, bad)))), "invalid field counter bounded");
+                    new Proto.Writer().number(1, bad)))), "invalid content revision bounded");
         }
+        fails(() -> keyboard.receive(keyboardMessage(21, new Proto.Writer().number(1, 9))),
+                "server visibility is a boolean, not a batch counter");
         fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
-                new Proto.Writer().bytes(2, new byte[] {(byte)0xff})))), "invalid UTF-8 rejected even without mirror");
+                new Proto.Writer().bytes(2, new byte[] {(byte)0xff})))), "invalid UTF-8 rejected without a retained mirror");
         fails(() -> keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2,
                 new Proto.Writer().bytes(2, new byte[16385])))), "TV text size bounded");
         for (String text : new String[] {"", "\ud800", "\udc00", new String(new char[4097]).replace('\0', 'a')})
             fails(() -> KeyboardSession.validateCommit(text), "invalid/oversized outgoing text bounded");
         keyboard.clear(); keyboard.supported(true);
-        keyboard.receive(keyboardMessage(21, new Proto.Writer()));
-        keyboard.receive(keyboardMessage(22, new Proto.Writer().message(2, new Proto.Writer())));
+        keyboard.receive(keyboardMessage(20, editor(1, 0, 0, 0)));
         batch = Proto.parse(keyboard.commit("a", keyboard.snapshot()).build()).message(21);
-        check(!batch.has(1) && !batch.has(2), "zero counters use canonical proto3 omission");
-        check(!batch.message(3).message(2).has(1) && !batch.message(3).message(2).has(2), "zero text offsets omitted");
+        check(batch.integer(1, 0) == 1 && !batch.has(2), "zero content revision uses canonical default omission");
+        check(!batch.message(3).message(2).has(1) && !batch.message(3).message(2).has(2), "zero insertion coordinates omitted");
         keyboard.clear();
         check(!keyboard.snapshot().active && !keyboard.snapshot().supported, "disconnect removes all keyboard metadata");
     }
@@ -290,11 +331,13 @@ public final class ProtocolTest {
             write(socket, new Proto.Writer().message(1, new Proto.Writer().number(1, 7)));
             check(read(socket).message(1).integer(1, 0) == 7, "IME capability intersected over TLS");
             write(socket, new Proto.Writer().message(2, new Proto.Writer().number(1, 7))); read(socket);
-            write(socket, new Proto.Writer().message(21, new Proto.Writer().number(1, 9).number(2, 2)));
-            write(socket, new Proto.Writer().message(22, new Proto.Writer().message(2, new Proto.Writer().number(1, 2))));
+            write(socket, new Proto.Writer().message(20, editor(9, 12, 3, 3)));
+            write(socket, new Proto.Writer().message(21, new Proto.Writer().number(1, 1)));
             write(socket, new Proto.Writer().message(40, new Proto.Writer().number(1, 1)));
             Proto.Message batch = read(socket).message(21);
-            check(batch.integer(1, 0) == 9 && batch.integer(2, 0) == 2, "authenticated text carries TV counters");
+            check(batch.integer(1, 0) == 9 && batch.integer(2, 0) == 12, "authenticated text carries independent editor and content counters");
+            check(batch.message(3).message(2).integer(1, 0) == 3 && batch.message(3).message(2).integer(2, 0) == 3,
+                    "TLS replacement carries actual selected TV coordinates");
             check(Arrays.equals(batch.message(3).message(2).bytes(3), "paste 😀".getBytes("UTF-8")), "TLS Unicode commit preserved exactly once");
             check(read(socket).message(10).integer(1, 0) == 67, "backspace uses ordinary keyboard key");
             check(read(socket).message(10).integer(1, 0) == 66, "Enter uses ordinary keyboard key");
@@ -306,7 +349,7 @@ public final class ProtocolTest {
         CountDownLatch blur = new CountDownLatch(1);
         remote.setKeyboardListener(value -> { if (!value.active) blur.countDown(); });
         KeyboardState target = remote.keyboardState();
-        check(target.canType(), "real reader consumes IME frames during startup");
+        check(target.canType() && target.showRequested, "real reader consumes distinct editor and visibility frames during startup");
         remote.sendText("paste 😀", target); remote.sendKeyboardKey(67, target); remote.sendKeyboardKey(66, target);
         check(gotCommit.await(2, TimeUnit.SECONDS), "server receives commits and editing keys");
         check(blur.await(2, TimeUnit.SECONDS), "real reader emits focus loss without polling");

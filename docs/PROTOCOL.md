@@ -117,59 +117,81 @@ ownership; the standalone protocol layer does not start Android services.
 
 ## Native keyboard input
 
-Android 0.6.0 and macOS 0.3.0 request the Remote v2 IME feature (4), using the
-[current wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remotemessage.proto)
-and [the reference client's text commits](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remote.py),
-consulted on 2026-10-22. Envelope field 20 supplies app/field context, field 21
-supplies the IME and field counters, and field 22 explicitly requests keyboard
-display. App information alone is not a show request. A valid field-22 message
-switches an open remote to keyboard mode; repeated messages for that same field
-do not undo the user's **Remote** choice. A new field can request keyboard mode
-again. **Keyboard** also opens the mode manually. When the service has not
-provided a focused editor with matching counters, the UI waits for a TV text
-field instead of guessing a destination or sending input to another app.
+BareRemote negotiates the Remote v2 IME feature (4). The IME messages use
+**different schemas in each direction**. The community
+[wire schema](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remotemessage.proto)
+and [reference client's text commits](https://github.com/tronikos/androidtvremote2/blob/main/src/androidtvremote2/remote.py)
+were the initial references, but their symmetric message names do not describe
+the TV-to-client IME contract on the CSV4K. The keyboard compatibility fix uses
+the generated directional messages and `ImeFeature` / `ImeBridgeService` logic
+from Android TV Remote Service **7.00.999235495** (version code **95855584**),
+examined on 2026-10-23. The APK and decompiled source are local diagnostics and
+are not distributed with BareRemote.
 
-Text is a stream of native input-method commits, not a local mirror or whole-field
-replacement. Marked/composing text stays on the phone or Mac until its input
-method commits. Each committed chunk uses field 21 with one edit-info entry:
-insert=1 and a RemoteImeObject containing the exact Unicode string. Its two
-positions are the final inserted UTF-16 unit's index (UTF-16 length minus one),
-following the established reference client's commit convention while using
-Android's UTF-16 indexing for non-BMP text. BareRemote does not invent unverified
-replacement or selection opcodes. Backspace, forward delete, Enter, Tab and
-cursor movement use the corresponding short Android key commands. The remote
-service does not acknowledge that a TV application applied a commit or key.
+| Direction / envelope | Actual meaning |
+| --- | --- |
+| TV → remote, 20 | Editor information in nested field 1, including editor identifier in field 1, input type in field 2 and package in field 12. Optional nested field 2 contains extracted-text status: content revision in field 1 and UTF-16 selection in fields 3/4. |
+| TV → remote, 21 | Input-window visibility: boolean field 1 and show flags in field 2. These are not batch-edit counters. |
+| TV → remote, 22 | Extracted-text update in nested field 2. Boolean field 1 identifies an acknowledgment for this client's own edits; it is not a keyboard-show request. |
+| TV → remote, 23 | Selection update, using nested fields **2/3** for start/end. |
+| TV → remote, 24 | External-key notification. Predicted coordinates are invalidated until fresh status or selection arrives. |
+| Remote → TV, 21 | Batch edit: editor identifier in field 1, content revision in field 2 and repeated edit objects in field 3. An insertion/replacement is the edit object's nested field **2**, containing start/end/value in fields 1/2/3. There is no `insert=1` scalar in the service's edit-oneof schema. |
 
-Each input captures the authenticated connection and focused editor. Immediately
-before writing, the protocol rejects a changed connection, app, field, expired
-deadline or cancelled session. A newer IME counter for the same editor is used
-at the write, so a server acknowledgment does not discard later queued
-characters; it never redirects captured input to a different editor. IME
-operations share the existing serialized command writer, bounded queue and
-connection lifetime. Failed or uncertain input is never retried or carried into
-a replacement connection. Close, Sync, field loss and stale lifecycle
-completions invalidate the old editor. The Mac callback queue coalesces state
-updates and preserves a show identifier only for the current explicitly shown
-field, so an older show event cannot open an unrelated editor.
+A nonzero editor identifier with a nonzero input type identifies a focused text
+editor. App/package information with a zero editor identifier is not a text
+field. The explicit visibility message switches an open remote to keyboard mode
+when an editor is present; it can arrive before or after the editor message.
+Repeated show or own-edit status notifications do not undo the user's
+**Remote** choice for that editor. A new editor can request keyboard mode again.
+**Keyboard** also opens the mode manually, using the current authenticated editor
+and its cursor rather than waiting for a batch-counter message that the TV does
+not send. Hiding the TV input window returns the automatic interface to remote
+mode; manual keyboard mode remains available for an editor that still accepts
+text. Without a current editor and usable cursor, text is not buffered or sent.
 
-TV-provided contents are parsed with frame/string/UTF-16 bounds and then
-discarded. They are never mirrored in the UI, logged or saved; this also avoids
-revealing passwords supplied by a TV service. A Mac commit is bounded to 4 KiB of
-UTF-8 and 2,048 UTF-16 units; Android allows 16 KiB and 4,096 UTF-16 units.
-Native composition is cleared on editor/lifecycle changes, and committed text
-has no local undo history. There is no clipboard
-monitor, keyboard service, idle polling or physical-TV probe.
+The editor identifier and content revision have different lifetimes. The editor
+identifier remains stable as characters are entered; extracted text changes
+advance its content revision. Each outgoing commit uses the current revision
+for its captured editor. The service applies the edit as
+`setComposingRegion(start, end)` followed by `commitText(value, 1)`, so the
+positions describe the TV's actual current selection in UTF-16 units. They are
+not the new string's length minus one. A selected range is replaced; an empty
+range inserts at the cursor. A serial commit reserves its resulting cursor
+before the server responds, so rapid native chunks append in order. A delayed
+own-edit acknowledgment advances the revision without rewinding that predicted
+cursor. An external content/selection change invalidates captured operations
+and restores authoritative coordinates. Backspace, forward delete, Enter, Tab
+and cursor movement use short Android key commands; subsequent text waits for
+fresh coordinates after a key that can alter the editor.
 
-The macOS pure-state tests cover IME negotiation, zero counters, both message
-orders, explicit show versus app-only context, repeated show/manual override,
-stale app/field/counter messages, same-editor ACK advances, connection-scoped
-tokens, Unicode vectors, limits, malformed fields and close. The independent
-`NativeImeTv` loopback fixture validates exact Unicode frames and UTF-16
-positions over real Keychain mutual TLS, sequential commits across an ACK,
-single-delivery keyboard keys, deadline/stale-target rejection without a frame,
-field loss, unsupported IME with usable normal keys, and malformed IME shutdown.
-Run `python3 macos/Tests/test_loopback.py`. These mock results do not establish
-keyboard compatibility with the physical CSV4K TV.
+Text is a stream of native input-method commits. Marked/composing text stays on
+the phone or Mac until its input method commits; it is never sent repeatedly as
+a whole local-field mirror. Input captures the connection, editor and transient
+focus token. Immediately before writing, the protocol rejects changed editors,
+external input changes, expired deadlines and cancelled sessions. It shares the
+existing serialized writer, bounded queue and connection lifetime. Failed or
+uncertain input is never retried or carried into a replacement connection.
+Close, Sync, editor loss and stale lifecycle completions invalidate input. The
+server's extracted-text response is state feedback, not proof that an arbitrary
+TV app performed the requested action.
+
+TV contents are validated with frame/string/UTF-16 bounds and then discarded;
+they are never mirrored in the UI, logged or saved. Only editor identity,
+revision, cursor and bounded non-content metadata remain in session state.
+A Mac commit is bounded to 4 KiB of UTF-8 and 2,048 UTF-16 units; Android allows
+16 KiB and 4,096 UTF-16 units. Native composition is cleared on editor/lifecycle
+changes, and committed text has no local undo history. There is no clipboard
+monitor, keyboard service, idle polling or automatic physical-TV probe.
+
+The directional regression fixtures use deliberately different editor and
+content counters, visibility before/after context, own-edit status updates,
+actual selection messages and Unicode insertions at a nonzero cursor. They
+exercise automatic/manual keyboard readiness, selection replacement, multiple
+commits across acknowledgments, stale-target rejection, editor loss and normal
+keys without IME support. `NativeImeTv` checks exact wire frames over real Mac
+Keychain mutual TLS; run `python3 macos/Tests/test_loopback.py`. These simulated
+results are distinct from physical-TV validation, which is recorded separately
+with the app and remote-service versions actually tested.
 
 Frames are varint length-delimited, limited to 64 KiB and 4096 fields. The parser rejects truncation, integer overflow, invalid tags and deprecated group wire types. Unknown ordinary fields can be skipped. A remote connection has a shared five-second network deadline; incomplete frames also have a deadline. Connections require a numeric IP address so DNS cannot exceed that budget. An idle remote read expires after sixteen seconds. Long keys send start, wait 650 ms, and send end even when the calling worker is interrupted. A command is not retried by this layer.
 

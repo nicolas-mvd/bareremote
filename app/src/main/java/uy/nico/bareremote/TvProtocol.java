@@ -194,6 +194,9 @@ public final class TvProtocol {
                 throw new IllegalArgumentException("Unknown keyboard control");
             synchronized (keyLock) {
                 keyboard.checkField(expected);
+                // Invalidate before writing: the reader can receive the new selection
+                // immediately after this write, and that fresh status must win the race.
+                keyboard.keyWritten(key);
                 sendKeyDirection(key, 3);
             }
         }
@@ -374,7 +377,7 @@ public final class TvProtocol {
                 keyboard.supported((features & 4) != 0);
                 if ((features & 2) == 0) throw new IOException("TV remote service does not support keys");
                 Proto.Writer device = new Proto.Writer().number(3, 1).text(4, "1")
-                        .text(5, "uy.nico.bareremote").text(6, "0.6.1");
+                        .text(5, "uy.nico.bareremote").text(6, "0.6.2");
                 send(new Proto.Writer().message(1,
                         new Proto.Writer().number(1, features).message(2, device)));
                 configured = true;

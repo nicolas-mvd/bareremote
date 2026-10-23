@@ -8,18 +8,19 @@ public struct TVKeyboardContext: Equatable, Sendable {
     let appCounter: Int32?
     let imeCounter: Int32
     let fieldCounter: Int32
+    let selectionStart: Int
+    let selectionEnd: Int
 }
 
-/// A transient IME snapshot. TV text is deliberately neither retained nor exposed:
-/// a remote service may include passwords in otherwise ordinary field messages.
+/// Transient editor metadata only. TV text is never retained or exposed.
 public struct TVKeyboardState: Equatable, Sendable {
     public let supported: Bool
     public let active: Bool
     public let canSendText: Bool
     public let focusID: UInt64
-    /// Zero unless the TV explicitly requested the keyboard for this focus.
-    /// A positive identifier advances once for each focus's first show request.
-    /// Repeated show messages for the same field do not undo a manual Remote choice.
+    /// The server's explicit input-window visibility, unknown until envelope 21.
+    public let keyboardVisible: Bool?
+    /// Advances only on the first explicit show for a focused editor.
     public let showRequestID: UInt64
     public let context: TVKeyboardContext?
     public let fieldLabel: String
@@ -27,9 +28,9 @@ public struct TVKeyboardState: Equatable, Sendable {
     public let selectionEnd: Int?
 }
 
-/// Pure state machine, owned under TVRemote's state lock. Counters and focus are
-/// tracked independently because a show request and its batch counters can arrive
-/// in either order. Unmatched counters never authorize an input operation.
+/// Remote v2 uses different client and server IME messages. In particular,
+/// server 21 is visibility, not the client 21 batch-edit counter message.
+/// Owned under TVRemote's state lock; no TV field contents are stored.
 struct TVKeyboardTracker {
     static let maximumTextBytes = 4096
     static let maximumTextUTF16 = 2048
@@ -39,36 +40,32 @@ struct TVKeyboardTracker {
     private var appCounter: Int32?
     private var appPackage: String?
     private var field: Field?
-    private var counters: Counters?
-    private var latestCounters: Counters?
-    private var latestFieldCounter: Int32?
     private var focusID: UInt64 = 0
     private var showRequestID: UInt64 = 0
     private var shownForFocus = false
+    private var keyboardVisible: Bool?
+    private var predictedCursor = false
 
     private struct Field {
         let counter: Int32
         let label: String
-        let start: Int?
-        let end: Int?
-    }
-    private struct Counters: Equatable {
-        let ime: Int32
-        let field: Int32
-        func precedes(_ other: Counters) -> Bool {
-            ime < other.ime || (ime == other.ime && field < other.field)
-        }
+        var start: Int?
+        var end: Int?
+        var textLength: Int?
     }
 
     var snapshot: TVKeyboardState {
         let context: TVKeyboardContext?
-        if supported, let field, let counters, counters.field == field.counter {
+        if supported, let appCounter, appCounter > 0, let field,
+           let start = field.start, let end = field.end {
             context = TVKeyboardContext(connection: connection, focus: focusID,
-                                        appCounter: appCounter, imeCounter: counters.ime,
-                                        fieldCounter: counters.field)
+                                        appCounter: appCounter, imeCounter: appCounter,
+                                        fieldCounter: field.counter,
+                                        selectionStart: start, selectionEnd: end)
         } else { context = nil }
-        return TVKeyboardState(supported: supported, active: supported && field != nil,
+        return TVKeyboardState(supported: supported, active: supported && appCounter != nil,
                                canSendText: context != nil, focusID: focusID,
+                               keyboardVisible: keyboardVisible,
                                showRequestID: shownForFocus ? showRequestID : 0, context: context,
                                fieldLabel: field?.label ?? "", selectionStart: field?.start,
                                selectionEnd: field?.end)
@@ -77,145 +74,218 @@ struct TVKeyboardTracker {
     mutating func configure(supported: Bool) {
         self.supported = supported
         clearFocus()
-        counters = nil
-        latestCounters = nil
-        latestFieldCounter = nil
-        appCounter = nil
-        appPackage = nil
+        keyboardVisible = nil
     }
 
     mutating func close() {
         supported = false
         clearFocus()
-        counters = nil
-        latestCounters = nil
-        latestFieldCounter = nil
-        appCounter = nil
-        appPackage = nil
+        keyboardVisible = nil
     }
 
     mutating func receive(_ message: Proto.Message) throws {
         guard supported else { return }
         if message.has(20) {
             let inject = try uniqueMessage(message, 20)
-            if inject.has(1) {
-                let app = try uniqueMessage(inject, 1)
-                let counter = try nonnegativeInt32(app, 1)
-                let package = try text(app, 12, maximumBytes: 512)
-                if let previous = appCounter, counter < previous { return }
-                if appCounter != counter || appPackage != package {
-                    clearFocus()
-                    counters = nil
-                    latestCounters = nil
-                    latestFieldCounter = nil
-                }
+            guard inject.has(1) else { clearFocus(); return }
+            let app = try uniqueMessage(inject, 1)
+            let counter = try nonnegativeInt32(app, 1)
+            let inputType = try nonnegativeInt32(app, 2)
+            let package = try text(app, 12, maximumBytes: 512)
+            // A non-editor app notification has counter/inputType zero, even
+            // when it names the foreground package. No contents are required.
+            guard counter > 0, inputType > 0 else { clearFocus(); return }
+            if appCounter != counter || appPackage != package {
+                clearFocus()
                 appCounter = counter
                 appPackage = package
             }
             if inject.has(2) {
-                _ = try updateField(try Self.field(uniqueMessage(inject, 2)))
+                field = try Self.field(uniqueMessage(inject, 2))
+                predictedCursor = false
             } else {
-                // App information without a field also signals loss of the editor.
-                clearFocus()
-                counters = nil
+                // Some editors cannot extract text. Keep their identity, but
+                // do not invent a revision or insertion position.
+                field = nil
+                predictedCursor = false
             }
+            requestShowIfVisible()
         }
         if message.has(21) {
-            let batch = try uniqueMessage(message, 21)
-            let next = Counters(ime: try nonnegativeInt32(batch, 1),
-                                field: try nonnegativeInt32(batch, 2))
-            if let latestCounters, next.precedes(latestCounters) { return }
-            latestCounters = next
-            counters = next
+            let visibility = try uniqueMessage(message, 21)
+            let raw = try scalar(visibility, 1)
+            guard raw <= 1 else { throw TVProtocolError.malformed("Invalid TV keyboard visibility.") }
+            _ = try nonnegativeInt32(visibility, 2) // InputMethodManager flags.
+            keyboardVisible = raw == 1
+            requestShowIfVisible()
         }
         if message.has(22) {
-            let request = try uniqueMessage(message, 22)
-            guard request.has(2) else {
-                clearFocus()
-                counters = nil
-                return
+            let update = try uniqueMessage(message, 22)
+            let raw = try scalar(update, 1)
+            guard raw <= 1 else { throw TVProtocolError.malformed("Invalid TV keyboard acknowledgment.") }
+            if update.has(2) {
+                let next = try Self.field(uniqueMessage(update, 2))
+                guard appCounter != nil else { return }
+                if let field, next.counter < field.counter { return }
+                // Own-edit acknowledgments can lag subsequent queued commits.
+                // They advance the content revision without rewinding the
+                // predicted cursor. External changes cancel captured input.
+                if raw == 1, predictedCursor, let previous = field {
+                    field = Field(counter: next.counter, label: next.label,
+                                  start: previous.start, end: previous.end, textLength: previous.textLength)
+                } else {
+                    if let field, field.start != next.start || field.end != next.end || field.counter != next.counter {
+                        focusID &+= 1
+                    }
+                    field = next
+                    predictedCursor = false
+                }
             }
-            guard try updateField(try Self.field(uniqueMessage(request, 2))) else { return }
-            if !shownForFocus {
-                showRequestID &+= 1
-                shownForFocus = true
+        }
+        if message.has(23) {
+            let selection = try uniqueMessage(message, 23)
+            let start = try Self.selection(signedInt32(selection, 2))
+            let end = try Self.selection(signedInt32(selection, 3))
+            if let previous = field {
+                if previous.start != start || previous.end != end { focusID &+= 1 }
+                field = Field(counter: previous.counter, label: previous.label, start: start, end: end, textLength: previous.textLength)
+                predictedCursor = false
+            }
+        }
+        if message.has(24) {
+            _ = try uniqueMessage(message, 24)
+            // The TV reports an external key while this client owns an edit.
+            // Wait for authoritative cursor/content rather than reusing our
+            // predicted position after another input source changed it.
+            if var previous = field {
+                focusID &+= 1
+                previous.start = nil
+                previous.end = nil
+                field = previous
+                predictedCursor = false
             }
         }
     }
 
-    func validate(_ context: TVKeyboardContext) throws {
-        _ = try currentContext(matching: context)
-    }
+    func validate(_ context: TVKeyboardContext) throws { _ = try currentContext(matching: context) }
 
-    func currentContext(matching context: TVKeyboardContext) throws -> TVKeyboardContext {
+    func currentContext(matching context: TVKeyboardContext, requireSelection: Bool = true) throws -> TVKeyboardContext {
         guard supported else { throw TVProtocolError.unsupported("This TV remote service does not support keyboard input.") }
-        guard let current = snapshot.context,
-              current.connection == context.connection, current.focus == context.focus,
-              current.appCounter == context.appCounter, current.fieldCounter == context.fieldCounter else {
+        guard let appCounter, appCounter == context.appCounter,
+              connection == context.connection, focusID == context.focus,
+              let field else {
             throw TVProtocolError.unsupported("The TV text field changed. Select its text field and type again.")
         }
-        // IME counters may acknowledge edits inside the same field. Use the latest
-        // counter without re-targeting the field captured with the user's input.
+        if requireSelection, field.start == nil || field.end == nil {
+            throw TVProtocolError.unsupported("Wait for the TV text cursor, then type again.")
+        }
+        let current = TVKeyboardContext(connection: connection, focus: focusID, appCounter: appCounter,
+                                        imeCounter: appCounter, fieldCounter: field.counter,
+                                        selectionStart: field.start ?? context.selectionStart,
+                                        selectionEnd: field.end ?? context.selectionEnd)
+        // A content revision is not an editor identity. Use the latest revision
+        // and cursor for the same captured editor immediately before writing.
         return current
     }
 
-    /// A native IME commit, not a replacement of the TV field. Positions use
-    /// Android/NSString UTF-16 units, following the established Remote v2 client
-    /// convention of the final inserted unit's index. Selection edits are left to
-    /// scoped Android keys instead of inventing unverified edit opcodes.
+    /// Reserve the cursor after one serialized commit, before its ACK arrives.
+    /// Only lengths and positions are kept; never the committed text.
+    mutating func committed(_ text: String, context: TVKeyboardContext) {
+        guard context.connection == connection, context.focus == focusID, var field else { return }
+        let position = min(context.selectionStart, context.selectionEnd) + text.utf16.count
+        if let length = field.textLength {
+            field.textLength = length - abs(context.selectionStart - context.selectionEnd) + text.utf16.count
+        }
+        field.start = position
+        field.end = position
+        self.field = field
+        predictedCursor = true
+    }
+
+    mutating func keyWritten(_ key: Int) {
+        guard var field else { return }
+        // Actions may be no-ops and produce no metadata response. Changes made
+        // by Enter/Tab still arrive through the ordinary editor/content events.
+        if key == 66 || key == 61 { return }
+        if let start = field.start, let end = field.end, start == end {
+            if start == 0 && (key == 67 || key == 21) { return }
+            if let length = field.textLength, start == length && (key == 112 || key == 22) { return }
+        }
+        field.start = nil
+        field.end = nil
+        self.field = field
+        predictedCursor = false
+    }
+
+    /// The service maps this edit to setComposingRegion(start,end), followed by
+    /// commitText(value,1). The positions describe the TV's current selection,
+    /// not the length of the new chunk. UTF-16 positions match Android.
     static func textMessage(_ text: String, context: TVKeyboardContext) throws -> Proto.Writer {
         let count = text.utf16.count
-        guard !text.isEmpty, text.utf8.count <= maximumTextBytes,
-              count <= maximumTextUTF16 else {
+        guard !text.isEmpty, text.utf8.count <= maximumTextBytes, count <= maximumTextUTF16,
+              context.selectionStart >= 0, context.selectionEnd >= 0,
+              max(context.selectionStart, context.selectionEnd) <= 32 * 1024,
+              min(context.selectionStart, context.selectionEnd) + count <= 32 * 1024 else {
             throw TVProtocolError.unsupported("Type up to 2,048 characters at a time.")
         }
-        let position = UInt64(count - 1)
         let object = Proto.Writer()
-        // Match proto3's canonical omission of zero scalar defaults.
-        if position != 0 { try object.number(1, position).number(2, position) }
+        if context.selectionStart != 0 { try object.number(1, UInt64(context.selectionStart)) }
+        if context.selectionEnd != 0 { try object.number(2, UInt64(context.selectionEnd)) }
         try object.text(3, text)
-        let edit = try Proto.Writer().number(1, 1).message(2, object)
+        let edit = try Proto.Writer().message(2, object)
         let batch = Proto.Writer()
         if context.imeCounter != 0 { try batch.number(1, UInt64(context.imeCounter)) }
         if context.fieldCounter != 0 { try batch.number(2, UInt64(context.fieldCounter)) }
         return try Proto.Writer().message(21, batch.message(3, edit))
     }
 
-    private mutating func updateField(_ next: Field) throws -> Bool {
-        if let latestFieldCounter, next.counter < latestFieldCounter { return false }
-        if field?.counter != next.counter {
-            focusID &+= 1
-            shownForFocus = false
+    private mutating func requestShowIfVisible() {
+        if keyboardVisible == true, appCounter != nil, !shownForFocus {
+            showRequestID &+= 1
+            shownForFocus = true
         }
-        field = next
-        latestFieldCounter = next.counter
-        return true
     }
 
     private mutating func clearFocus() {
-        if field != nil { focusID &+= 1 }
+        focusID &+= 1
+        appCounter = nil
+        appPackage = nil
         field = nil
         shownForFocus = false
+        predictedCursor = false
+    }
+
+    private static func selection(_ value: Int32) throws -> Int? {
+        guard value >= -1, value <= 32 * 1024 else {
+            throw TVProtocolError.malformed("Invalid TV text selection.")
+        }
+        return value < 0 ? nil : Int(value)
     }
 
     private static func field(_ message: Proto.Message) throws -> Field {
         let counter = try nonnegativeInt32(message, 1)
-        // Inspect only bounds and selection; do not copy TV contents into state.
+        // Validate and release private TV contents immediately; no mirror exists.
         let contents = try text(message, 2, maximumBytes: 32 * 1024)
-        let start = try signedInt32(message, 3)
-        let end = try signedInt32(message, 4)
-        let selectionLimit = contents.isEmpty ? 32 * 1024 : contents.utf16.count
-        // Services may omit/redact a password's contents while still reporting
-        // its cursor. Do not infer an empty TV field from absent string data.
-        guard (start == -1 && end == -1) ||
-                (start >= 0 && end >= 0 && start <= selectionLimit && end <= selectionLimit) else {
+        let start = try selection(signedInt32(message, 3))
+        let end = try selection(signedInt32(message, 4))
+        let limit = contents.isEmpty ? 32 * 1024 : contents.utf16.count
+        guard (start == nil && end == nil) ||
+                (start != nil && end != nil && start! <= limit && end! <= limit) else {
             throw TVProtocolError.malformed("Invalid TV text selection.")
         }
         let label = try text(message, 6, maximumBytes: 512)
             .filter { !$0.isNewline && !$0.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) }
-        return Field(counter: counter, label: label,
-                     start: start < 0 ? nil : Int(start), end: end < 0 ? nil : Int(end))
+        let length = contents.utf16.count
+        let knownLength = message.has(2) && length >= max(start ?? 0, end ?? 0) ? length : nil
+        return Field(counter: counter, label: label, start: start, end: end, textLength: knownLength)
     }
+}
+
+private func scalar(_ message: Proto.Message, _ field: Int) throws -> UInt64 {
+    guard message.fields.filter({ $0.number == field }).count <= 1 else {
+        throw TVProtocolError.malformed("Ambiguous TV keyboard value.")
+    }
+    return try message.integer(field)
 }
 
 private func uniqueMessage(_ message: Proto.Message, _ field: Int) throws -> Proto.Message {

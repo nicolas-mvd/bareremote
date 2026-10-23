@@ -176,7 +176,11 @@ public final class FakeTv {
                 }
             }
         }, 3, 3, TimeUnit.SECONDS);
-        int focusTap = 0, imeCounter = 7, fieldCounter = 0, commits = 0;
+        // The service uses different incoming/outgoing schemas for envelopes
+        // 20/21/22. Editor identity and content revisions are distinct values.
+        int focusTap = 0, imeCounter = 6, fieldCounter = 8, commits = 0;
+        int selectionStart = 0, selectionEnd = 0;
+        boolean editorActive = false, ownsEditor = false;
         String typed = "";
         try {
             while (!socket.isClosed()) {
@@ -188,21 +192,54 @@ public final class FakeTv {
                     if (imeScenario && (features & 4) != 0 && direction == 3) {
                         if (code == 23) {
                             focusTap++;
-                            if (focusTap == 1 || focusTap % 2 == 1) { fieldCounter++; typed = ""; }
-                            write(socket, new Proto.Writer().message(21,
-                                    new Proto.Writer().number(1, imeCounter).number(2, fieldCounter)));
-                            write(socket, new Proto.Writer().message(20, new Proto.Writer().message(2,
-                                    new Proto.Writer().number(1, fieldCounter).number(3, 0).number(4, 0))));
-                            write(socket, new Proto.Writer().message(22, new Proto.Writer().message(2,
-                                    new Proto.Writer().number(1, fieldCounter).number(3, 0).number(4, 0))));
+                            if (!editorActive || focusTap % 2 == 1) {
+                                imeCounter++;
+                                fieldCounter++;
+                                typed = "";
+                                selectionStart = selectionEnd = 0;
+                                ownsEditor = false;
+                            }
+                            editorActive = true;
+                            write(socket, imeEditor(imeCounter, fieldCounter, typed, selectionStart, selectionEnd));
+                            write(socket, imeVisibility(true));
                             System.out.println("IME_SHOW id=" + session + " field=" + fieldCounter
-                                    + " repeated=" + (focusTap % 2 == 0));
+                                    + " editor=" + imeCounter + " repeated=" + (focusTap % 2 == 0));
                         } else if (code == 4) {
-                            write(socket, new Proto.Writer().message(20, new Proto.Writer()));
+                            editorActive = ownsEditor = false;
+                            write(socket, new Proto.Writer().message(20, new Proto.Writer().message(1,
+                                    new Proto.Writer().number(1, 0).text(12, "local.ime.fixture"))));
+                            write(socket, imeVisibility(false));
                             System.out.println("IME_HIDE id=" + session);
-                        } else if (code == 67 && !typed.isEmpty()) {
-                            typed = typed.substring(0, typed.offsetByCodePoints(typed.length(), -1));
+                        } else if ((code == 67 || code == 112) && editorActive) {
+                            int first = Math.min(selectionStart, selectionEnd);
+                            int last = Math.max(selectionStart, selectionEnd);
+                            if (first == last) {
+                                if (code == 67 && first > 0) first = typed.offsetByCodePoints(first, -1);
+                                if (code == 112 && last < typed.length()) last = typed.offsetByCodePoints(last, 1);
+                            }
+                            if (first != last) {
+                                typed = typed.substring(0, first) + typed.substring(last);
+                                selectionStart = selectionEnd = first;
+                                ownsEditor = false;
+                                fieldCounter++;
+                                write(socket, imeStatus(fieldCounter, typed, selectionStart, selectionEnd, false));
+                            }
                             System.out.println("IME_DELETE id=" + session + " remaining_utf16=" + typed.length());
+                        } else if ((code == 21 || code == 22) && editorActive) {
+                            int position;
+                            if (selectionStart != selectionEnd) {
+                                position = code == 21 ? Math.min(selectionStart, selectionEnd) : Math.max(selectionStart, selectionEnd);
+                            } else if (code == 21 && selectionStart > 0) {
+                                position = typed.offsetByCodePoints(selectionStart, -1);
+                            } else if (code == 22 && selectionEnd < typed.length()) {
+                                position = typed.offsetByCodePoints(selectionEnd, 1);
+                            } else position = selectionStart;
+                            if (position != selectionStart || position != selectionEnd) {
+                                selectionStart = selectionEnd = position;
+                                write(socket, new Proto.Writer().message(23,
+                                        new Proto.Writer().number(2, position).number(3, position)));
+                            }
+                            System.out.println("IME_CURSOR id=" + session + " position=" + position);
                         } else if (code == 66) System.out.println("IME_ENTER id=" + session);
                     }
                     final String directionName = direction == 3 ? "SHORT" : direction == 1 ? "START_LONG"
@@ -222,25 +259,29 @@ public final class FakeTv {
                     }, 250, TimeUnit.MILLISECONDS));
                 } else if (message.has(21) && imeScenario && (features & 4) != 0) {
                     Proto.Message batch = message.message(21);
-                    // A later ACK may be in flight while another committed chunk is already on TCP.
-                    long revision = batch.integer(1, 0);
-                    if (fieldCounter == 0 || revision < 7 || revision > imeCounter
-                            || batch.integer(2, 0) != fieldCounter) throw new IOException("Wrong IME counters");
+                    long editor = batch.integer(1, 0), revision = batch.integer(2, 0);
+                    // Real bsh checks the content revision when taking ownership;
+                    // further commits from that writer can have ACKs in flight.
+                    if (!editorActive || editor != imeCounter || (!ownsEditor && revision != fieldCounter)
+                            || revision < 9 || revision > fieldCounter) throw new IOException("Wrong IME counters");
                     Proto.Message edit = batch.message(3);
-                    if (edit.integer(1, 0) != 1) throw new IOException("Unknown IME operation");
+                    if (edit.fields.size() != 1 || !edit.has(2)) throw new IOException("Unknown IME operation");
                     Proto.Message object = edit.message(2);
                     byte[] bytes = object.bytes(3);
                     String text = StandardCharsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString();
                     KeyboardSession.validateCommit(text);
-                    if (object.integer(1, 0) != text.length() - 1 || object.integer(2, 0) != text.length() - 1)
-                        throw new IOException("Wrong UTF-16 positions");
-                    typed += text;
+                    int start = (int) object.integer(1, 0), end = (int) object.integer(2, 0);
+                    if (start != Math.min(selectionStart, selectionEnd) || end != Math.max(selectionStart, selectionEnd))
+                        throw new IOException("Wrong UTF-16 cursor positions");
+                    typed = typed.substring(0, start) + text + typed.substring(end);
+                    selectionStart = selectionEnd = start + text.length();
+                    ownsEditor = true;
                     System.out.println("IME_COMMIT id=" + session + " sequence=" + (++commits)
-                            + " field=" + fieldCounter + " revision=" + revision + " utf16=" + text.length() + " bytes=" + bytes.length);
+                            + " field=" + fieldCounter + " editor=" + editor + " revision=" + revision
+                            + " start=" + start + " end=" + end + " utf16=" + text.length() + " bytes=" + bytes.length);
                     // ACK revision changes while the focused editor remains the same.
-                    imeCounter++;
-                    write(socket, new Proto.Writer().message(21,
-                            new Proto.Writer().number(1, imeCounter).number(2, fieldCounter)));
+                    fieldCounter++;
+                    write(socket, imeStatus(fieldCounter, typed, selectionStart, selectionEnd, true));
                 } else if (message.has(90)) {
                     String link = new String(message.message(90).bytes(1), java.nio.charset.StandardCharsets.UTF_8);
                     java.util.regex.Matcher picture = PICTURE_REQUEST.matcher(link);
@@ -277,6 +318,25 @@ public final class FakeTv {
             for (ScheduledFuture<?> pending : pendingKeys) pending.cancel(false);
             ping.cancel(false);
         }
+    }
+
+    private static Proto.Writer imeEditor(int editor, int revision, String text, int start, int end) {
+        return new Proto.Writer().message(20, new Proto.Writer().message(1,
+                new Proto.Writer().number(1, editor).number(2, 1).text(12, "local.ime.fixture"))
+                .message(2, imeField(revision, text, start, end)));
+    }
+
+    private static Proto.Writer imeVisibility(boolean visible) {
+        return new Proto.Writer().message(21, new Proto.Writer().number(1, visible ? 1 : 0).number(2, 0));
+    }
+
+    private static Proto.Writer imeStatus(int revision, String text, int start, int end, boolean ownEdit) {
+        return new Proto.Writer().message(22, new Proto.Writer().number(1, ownEdit ? 1 : 0)
+                .message(2, imeField(revision, text, start, end)));
+    }
+
+    private static Proto.Writer imeField(int revision, String text, int start, int end) {
+        return new Proto.Writer().number(1, revision).text(2, text).number(3, start).number(4, end).text(6, "Search");
     }
 
     private static void replyPicture(String replyHost, int replyPort, byte[] token, String state, int session) {
